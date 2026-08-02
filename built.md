@@ -88,6 +88,10 @@ image-api --version
 # 在 src 目录内构建，产物输出到项目根目录
 cd src
 go build -ldflags="-s -w -X main.version=v1.0.0" -o ../image-api .
+
+# 本地验证版本号已注入
+../image-api --version
+# 输出: image-api v1.0.0
 ```
 
 - 启动日志会显示：`[启动] image-api v1.0.0 | HTTP Server 监听 0.0.0.0:8080`

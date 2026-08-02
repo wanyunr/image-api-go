@@ -45,6 +45,47 @@ cd ..
 
 > 说明：Go 模块根目录为 `src/`，请在 `src/` 内执行 `go build` / `go run` / `go test` 等命令。所有运行时路径（配置文件、URL 列表）以**当前工作目录**为基准，推荐在项目根目录运行二进制。
 
+## 开发调试
+
+**前提：**
+
+1. `go` 命令（build / run / test / vet）必须在 `src/` 目录内执行 —— Go 模块根目录在 `src/`，在根目录执行会报 `cannot find main module`。
+2. 程序运行时的配置与 URL 列表路径以**当前工作目录**为基准。直接从 `src/` 执行 `go run .` 会读不到根目录的 `config.yaml` / `urls/`，程序会在此目录自动生成空的默认文件，导致 URL 池为空（访问返回 503）。
+
+**推荐调试方式：在 `src/` 构建，回到根目录运行：**
+
+```bash
+# 一键构建并启动（在项目根目录执行）
+cd src && go build -o ../image-api . && cd .. && ./image-api
+
+# 另开终端验证
+curl http://127.0.0.1:28085/health    # {"pool":{...},"status":"ok",...}
+curl -i http://127.0.0.1:28085/       # 302 → 随机图片
+
+# 停止服务：Ctrl + C
+```
+
+**单元测试与静态检查**（在 `src/` 内）：
+
+```bash
+cd src
+go test ./...        # 运行全部测试
+go vet ./...         # 静态检查
+go test -race ./...  # 竞态检测（需要 CGO_ENABLED=1；Windows 需安装 gcc）
+```
+
+**日志排查：** 程序日志全部输出到标准输出（stdout）。启动时依次打印：配置加载、URL 池数量（portrait/landscape）、监听地址、各功能开关（鉴权/限流/防盗链）；每个请求打印一行 `[request] IP=... UA=...`，直接在终端观察即可。
+
+**运行参数：**
+
+```bash
+./image-api                      # 默认读取 config.yaml
+./image-api /path/to/config.yaml # 指定配置文件
+./image-api --version            # 查看版本（-v 亦可）
+```
+
+**热重载：** 修改 `urls/*.txt` 后无需重启，调用 `curl -X POST http://127.0.0.1:28085/admin/reload` 即可刷新 URL 池。
+
 ## 配置说明
 
 ```yaml
