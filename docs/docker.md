@@ -69,3 +69,35 @@ docker compose exec image-api sh
   ```dockerfile
   RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=v1.0.0" -o image-api .
   ```
+
+### 六、常见问题
+
+**1. 构建时 `go mod download` 超时（国内网络）**
+
+Dockerfile 默认使用官方 Go 模块代理 `proxy.golang.org`（Google 服务器），国内直连经常超时：
+
+```
+Get "https://proxy.golang.org/...": dial tcp ...:443: i/o timeout
+```
+
+**推荐做法**：在 `docker/.env` 中设置代理后正常构建（`docker-compose.yml` 已支持该变量）：
+
+```bash
+# docker/.env 中添加：
+GOPROXY=https://goproxy.cn,direct
+
+# 然后正常构建启动
+docker compose up -d --build
+```
+
+**或命令行方式**：注意 `--build-arg` 只属于 `docker compose build`，需分两步：
+
+```bash
+docker compose build --build-arg GOPROXY=https://goproxy.cn,direct
+docker compose up -d
+```
+
+
+**2. 容器内访问图片返回 503**
+
+`urls/*.txt` 未挂载或列表为空，确认 `docker-compose.yml` 的数据卷挂载正常、文件包含有效的 http/https URL。

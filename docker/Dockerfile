@@ -1,7 +1,11 @@
 # 构建阶段：编译纯静态二进制
 FROM golang:1.21-alpine AS builder
 WORKDIR /build
-# 先拷贝依赖文件，利用 Docker 层缓存
+# 默认使用官方 Go 模块代理；国内网络构建超时时，用 --build-arg 覆盖为国内镜像：
+#   docker compose up -d --build --build-arg GOPROXY=https://goproxy.cn,direct
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY}
+# 拷贝依赖文件
 COPY src/go.mod src/go.sum ./
 RUN go mod download
 # 拷贝源码并编译

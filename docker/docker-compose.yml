@@ -3,6 +3,9 @@ services:
     build:
       context: ..          # 构建上下文为项目根（源码在 src/）
       dockerfile: docker/Dockerfile
+      args:
+        # Go 模块代理：默认官方；国内网络可在 .env 中设 GOPROXY=https://goproxy.cn,direct
+        GOPROXY: "${GOPROXY:-https://proxy.golang.org,direct}"
     image: image-api:latest
     container_name: image-api
     ports:
