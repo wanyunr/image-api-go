@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"image-api/app"
 	"log"
 	"math/rand"
 	"net/http"
@@ -27,14 +28,14 @@ func main() {
 		cfgPath = os.Args[1]
 	}
 
-	cfg, err := LoadConfig(cfgPath)
+	cfg, err := app.LoadConfig(cfgPath)
 	if err != nil {
 		log.Fatalf("[启动失败] %v", err)
 	}
 	log.Printf("[配置] 加载成功: %s", cfgPath)
 
 	// 加载 URL 池
-	pool := NewURLPool()
+	pool := app.NewURLPool()
 	if err := pool.Load(cfg.URLs.Portrait, cfg.URLs.Landscape); err != nil {
 		log.Fatalf("[启动失败] %v", err)
 	}
@@ -42,11 +43,11 @@ func main() {
 	log.Printf("[URL池] portrait=%d landscape=%d", portrait, landscape)
 
 	// 初始化限流器
-	limiter := NewRateLimiter(cfg.RateLimit)
+	limiter := app.NewRateLimiter(cfg.RateLimit)
 	limiter.Cleanup()
 
 	// 初始化 Handler
-	handler := NewHandler(cfg, pool, limiter)
+	handler := app.NewHandler(cfg, pool, limiter)
 
 	// 路由
 	mux := http.NewServeMux()
