@@ -1,0 +1,15 @@
+services:
+  image-api:
+    build:
+      context: ..          # 构建上下文为项目根（源码在 src/）
+      dockerfile: docker/Dockerfile
+    image: image-api:latest
+    container_name: image-api
+    ports:
+      - "${APP_PORT:-28085}:28085"   # 宿主机端口（可用 .env 覆盖），容器内固定 28085
+    environment:
+      TZ: "${TZ:-Asia/Shanghai}"     # 容器时区（镜像已装 tzdata）
+    volumes:
+      - ../config.yaml:/app/config.yaml
+      - ../urls:/app/urls
+    restart: unless-stopped

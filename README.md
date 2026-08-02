@@ -21,7 +21,13 @@ image-api/
 ├── config.yaml           # 配置文件
 ├── docs/                 # 项目文档
 │   ├── built.md          # 构建发布教程（GitHub Actions）
-│   └── systemd.md        # Linux systemd 服务部署教程
+│   ├── systemd.md        # Linux systemd 服务部署教程
+│   └── docker.md         # Docker Compose 部署教程
+├── docker/               # 容器化部署
+│   ├── Dockerfile        # 镜像构建
+│   ├── docker-compose.yml # 编排
+│   └── .env.example      # 环境变量示例
+├── .dockerignore         # 构建上下文排除（需位于项目根）
 ├── README.md
 ├── urls/
 │   ├── portrait.txt
@@ -48,6 +54,7 @@ cd ..
 > 说明：Go 模块根目录为 `src/`，请在 `src/` 内执行 `go build` / `go run` / `go test` 等命令。所有运行时路径（配置文件、URL 列表）以**当前工作目录**为基准，推荐在项目根目录运行二进制。
 
 > 生产环境部署（systemd 服务、开机自启、日志管理）见 [docs/systemd.md](docs/systemd.md)。
+> Docker Compose 一键构建启动见 [docs/docker.md](docs/docker.md)。
 
 ## 开发调试
 
