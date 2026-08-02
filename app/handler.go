@@ -147,7 +147,7 @@ func (h *Handler) Reload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := h.pool.Load(h.cfg.URLs.Portrait, h.cfg.URLs.Landscape)
+	_, err := h.pool.Load(h.cfg.URLs.Portrait, h.cfg.URLs.Landscape)
 	if err != nil {
 		log.Printf("[reload failed] %v", err)
 		http.Error(w, "Reload Failed: "+err.Error(), http.StatusInternalServerError)

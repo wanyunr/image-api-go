@@ -28,16 +28,23 @@ func main() {
 		cfgPath = os.Args[1]
 	}
 
-	cfg, err := app.LoadConfig(cfgPath)
+	cfg, createdCfg, err := app.LoadConfig(cfgPath)
 	if err != nil {
 		log.Fatalf("[启动失败] %v", err)
+	}
+	if createdCfg {
+		log.Printf("[配置] 默认配置已生成: %s", cfgPath)
 	}
 	log.Printf("[配置] 加载成功: %s", cfgPath)
 
 	// 加载 URL 池
 	pool := app.NewURLPool()
-	if err := pool.Load(cfg.URLs.Portrait, cfg.URLs.Landscape); err != nil {
+	createdURLFiles, err := pool.Load(cfg.URLs.Portrait, cfg.URLs.Landscape)
+	if err != nil {
 		log.Fatalf("[启动失败] %v", err)
+	}
+	if createdURLFiles {
+		log.Printf("[URL池] 默认 URL 列表已生成: %s, %s", cfg.URLs.Portrait, cfg.URLs.Landscape)
 	}
 	portrait, landscape := pool.Count()
 	log.Printf("[URL池] portrait=%d landscape=%d", portrait, landscape)

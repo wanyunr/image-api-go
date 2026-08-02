@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -43,22 +44,75 @@ type RefererConfig struct {
 	Whitelist  []string `yaml:"whitelist"`
 }
 
-func LoadConfig(path string) (*Config, error) {
+func LoadConfig(path string) (*Config, bool, error) {
 	data, err := os.ReadFile(path)
+	created := false
 	if err != nil {
-		return nil, fmt.Errorf("读取配置文件失败: %w", err)
+		if os.IsNotExist(err) {
+			if err := createDefaultConfig(path); err != nil {
+				return nil, false, fmt.Errorf("生成默认配置失败: %w", err)
+			}
+			created = true
+			data, err = os.ReadFile(path)
+			if err != nil {
+				return nil, false, fmt.Errorf("读取默认配置失败: %w", err)
+			}
+		} else {
+			return nil, false, fmt.Errorf("读取配置文件失败: %w", err)
+		}
 	}
 
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("解析配置文件失败: %w", err)
+		return nil, false, fmt.Errorf("解析配置文件失败: %w", err)
 	}
 
 	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("配置校验失败: %w", err)
+		return nil, false, fmt.Errorf("配置校验失败: %w", err)
 	}
 
-	return &cfg, nil
+	return &cfg, created, nil
+}
+
+func DefaultConfig() *Config {
+	return &Config{
+		Server: ServerConfig{
+			Host: "0.0.0.0",
+			Port: 28085,
+		},
+		URLs: URLsConfig{
+			Portrait:  "urls/portrait.txt",
+			Landscape: "urls/landscape.txt",
+		},
+		Auth: AuthConfig{
+			Enabled: false,
+			Tokens:  []string{"your_secret_token"},
+		},
+		RateLimit: RateLimitConfig{
+			Enabled:   false,
+			PerMinute: 30,
+			PerHour:   120,
+			PerDay:    300,
+		},
+		Referer: RefererConfig{
+			Enabled:    false,
+			AllowEmpty: true,
+			Whitelist:  []string{"example.com", "*.example.com"},
+		},
+	}
+}
+
+func createDefaultConfig(path string) error {
+	cfg := DefaultConfig()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	defaultHeader := []byte("# 默认配置文件，由程序首次启动时自动生成。\n# 请根据需要修改后重新启动。\n\n")
+	return os.WriteFile(path, append(defaultHeader, data...), 0o644)
 }
 
 func (c *Config) Validate() error {
