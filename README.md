@@ -85,7 +85,7 @@ go vet ./...         # 静态检查
 go test -race ./...  # 竞态检测（需要 CGO_ENABLED=1；Windows 需安装 gcc）
 ```
 
-**日志排查：** 程序日志全部输出到标准输出（stdout）。启动时依次打印：配置加载、URL 池数量（portrait/landscape）、监听地址、各功能开关（鉴权/限流/防盗链）；每个请求打印一行 `[request] IP=... UA=...`，直接在终端观察即可。
+**日志排查：** 程序日志全部输出到标准输出（stdout）。启动时依次打印：配置加载、URL 池数量（portrait/landscape）、监听地址、各功能开关（鉴权/限流/防盗链）；每个请求打印一行 `[request] IP=... UA=... Query=...`（`Query` 中的 `token` 参数值已自动脱敏为 `***`），直接在终端观察即可。
 
 **运行参数：**
 
@@ -102,7 +102,7 @@ go test -race ./...  # 竞态检测（需要 CGO_ENABLED=1；Windows 需安装 g
 ```yaml
 server:
   host: "0.0.0.0"
-  port: 8080
+  port: 28085
 
 urls:
   portrait: "urls/portrait.txt"    # 竖屏 URL 列表
@@ -171,17 +171,17 @@ GET /
 
 ```bash
 # 浏览器访问 → 直接看到图片
-http://localhost:8080/
+http://localhost:28085/
 
 # 强制竖屏
-http://localhost:8080/?orientation=portrait
+http://localhost:28085/?orientation=portrait
 
 # JSON 格式
-curl "http://localhost:8080/?format=json"
+curl "http://localhost:28085/?format=json"
 # {"url":"https://cdn.example.com/p/001.jpg","orientation":"landscape"}
 
 # 纯文本
-curl "http://localhost:8080/?format=text"
+curl "http://localhost:28085/?format=text"
 # https://cdn.example.com/p/001.jpg
 ```
 
@@ -198,10 +198,10 @@ GET /health
 ### 热重载 URL 列表
 
 ```
-GET/POST /admin/reload
+POST /admin/reload
 ```
 
-修改 `portrait.txt` / `landscape.txt` 后无需重启，调用此接口即可刷新内存中的 URL 池。
+修改 `portrait.txt` / `landscape.txt` 后无需重启，调用此接口即可刷新内存中的 URL 池（仅接受 POST）。
 
 ```json
 {"status":"reloaded","portrait":5,"landscape":8}
@@ -212,18 +212,18 @@ GET/POST /admin/reload
 开启 `auth.enabled: true` 后，所有请求需携带 Token：
 
 ```bash
-# Query 参数方式
-curl "http://localhost:8080/?token=your-secret-token"
+# Header 方式（推荐：Token 不会进入 URL、代理日志与浏览器历史）
+curl -H "Authorization: Bearer your-secret-token" http://localhost:28085/
 
-# Header 方式
-curl -H "Authorization: Bearer your-secret-token" http://localhost:8080/
+# Query 参数方式（方便调试；注意 Token 会出现在访问日志中，生产环境慎用）
+curl "http://localhost:28085/?token=your-secret-token"
 ```
 
 未授权返回 `401 Unauthorized`。
 
 ## 频率限制
 
-开启 `rate_limit.enabled: true` 后，按客户端 IP 限制访问频率，支持三级限制同时生效：
+开启 `rate_limit.enabled: true` 后，**整个服务所有请求共享统一额度**（不按 IP 分桶），支持三级限制同时生效：
 
 - 每分钟 / 每小时 / 每天
 

@@ -94,7 +94,7 @@ go build -ldflags="-s -w -X main.version=v1.0.0" -o ../image-api .
 # 输出: image-api v1.0.0
 ```
 
-- 启动日志会显示：`[启动] image-api v1.0.0 | HTTP Server 监听 0.0.0.0:8080`
+- 启动日志会显示：`[启动] image-api v1.0.0 | HTTP Server 监听 0.0.0.0:28085`
 - 运行 `image-api --version` 或 `image-api -v` 可查看版本号
 - 本地 `go build` 不注入时默认显示 `dev`
 

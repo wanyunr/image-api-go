@@ -49,9 +49,8 @@ func main() {
 	portrait, landscape := pool.Count()
 	log.Printf("[URL池] portrait=%d landscape=%d", portrait, landscape)
 
-	// 初始化限流器
+	// 初始化限流器（全局限流，无需清理任务）
 	limiter := app.NewRateLimiter(cfg.RateLimit)
-	limiter.Cleanup()
 
 	// 初始化 Handler
 	handler := app.NewHandler(cfg, pool, limiter)
@@ -62,14 +61,22 @@ func main() {
 	mux.HandleFunc("/health", handler.Health)
 	mux.HandleFunc("/admin/reload", handler.Reload)
 
-	// 启动 HTTP Server
+	// 启动 HTTP Server（显式设置超时，防 Slowloris 慢连接攻击）
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      20 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 	log.Printf("[启动] image-api %s | HTTP Server 监听 %s", version, addr)
 	log.Printf("[鉴权] enabled=%v", cfg.Auth.Enabled)
 	log.Printf("[限流] enabled=%v", cfg.RateLimit.Enabled)
 	log.Printf("[防盗链] enabled=%v", cfg.Referer.Enabled)
 
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("[服务异常] %v", err)
 	}
 }

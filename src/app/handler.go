@@ -47,10 +47,10 @@ func (h *Handler) ServeImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ip := getClientIP(r)
+	ip := getClientIP(r) // 仅用于日志展示；限流为全局额度，不依赖 IP
 	ua := r.UserAgent()
 	h.totalReqs.Add(1)
-	log.Printf("[request] IP=%s UA=%s Query=%s", ip, ua, r.URL.RawQuery)
+	log.Printf("[request] IP=%s UA=%s Query=%s", ip, ua, sanitizeQuery(r.URL.RawQuery))
 
 	if !h.checkReferer(r) {
 		http.Error(w, "Forbidden", http.StatusForbidden)
@@ -62,7 +62,7 @@ func (h *Handler) ServeImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.limiter.Allow(ip) {
+	if !h.limiter.Allow() {
 		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
 		return
 	}
@@ -137,7 +137,7 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Reload(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+	if r.Method != http.MethodPost {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}

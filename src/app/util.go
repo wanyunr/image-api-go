@@ -4,22 +4,22 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
 
-// getClientIP 获取客户端真实 IP
+// getClientIP 获取客户端 IP（仅用于日志展示，与限流无关——限流为全局额度）。
+// 优先取 X-Forwarded-For / X-Real-IP（存在时），否则回退 TCP 直连来源。
 func getClientIP(r *http.Request) string {
-	// 优先从 X-Forwarded-For 获取
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")
 		return strings.TrimSpace(parts[0])
 	}
-	// X-Real-IP
 	if xri := r.Header.Get("X-Real-IP"); xri != "" {
 		return xri
 	}
-	// 直接取 RemoteAddr
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
@@ -41,19 +41,13 @@ func DetectDeviceType(ua string) string {
 	}
 }
 
-// extractHost 从 URL 中提取 host
+// extractHost 从 URL 中提取 host（去掉端口与路径，正确处理 IPv6 与用户信息）
 func extractHost(rawURL string) string {
-	s := rawURL
-	if idx := strings.Index(s, "://"); idx != -1 {
-		s = s[idx+3:]
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return ""
 	}
-	if idx := strings.Index(s, "/"); idx != -1 {
-		s = s[:idx]
-	}
-	if idx := strings.LastIndex(s, ":"); idx != -1 {
-		s = s[:idx]
-	}
-	return strings.ToLower(s)
+	return strings.ToLower(u.Hostname())
 }
 
 // matchReferer 匹配 Referer host 与白名单模式
@@ -98,4 +92,16 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dm %ds", minutes, seconds)
 	}
 	return fmt.Sprintf("%ds", seconds)
+}
+
+// tokenQueryRe 匹配 query 串中的 token 参数（大小写不敏感，含 & 连接符场景），用于日志脱敏
+var tokenQueryRe = regexp.MustCompile(`(?i)(^|&)token=[^&]*`)
+
+// sanitizeQuery 对 query 串做脱敏：将 token 参数值替换为 ***，避免敏感信息进入日志。
+// 非法参数（如未编码的 % 序列）原样保留，不做二次解析，防止误改。
+func sanitizeQuery(raw string) string {
+	if raw == "" || !strings.Contains(strings.ToLower(raw), "token") {
+		return raw
+	}
+	return tokenQueryRe.ReplaceAllString(raw, "${1}token=***")
 }
