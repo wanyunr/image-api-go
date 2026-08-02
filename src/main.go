@@ -22,7 +22,7 @@ func main() {
 		return
 	}
 
-	// 读取配置
+	// 读取配置（默认 config.yaml，可通过命令行参数覆盖）
 	cfgPath := "config.yaml"
 	if len(os.Args) > 1 {
 		cfgPath = os.Args[1]

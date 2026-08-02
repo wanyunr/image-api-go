@@ -1,1 +1,6 @@
+# 编译产物
+image-api
 image-api.exe
+
+# 工具数据（WorkBuddy 工作区记忆）
+.workbuddy/

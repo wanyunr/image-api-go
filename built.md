@@ -26,7 +26,23 @@ git push origin v1.0.0
 ### 三、构建流程
 
 ```text
-push tag v1.0.0    ↓┌─────────────────────────────────────────┐│  build job（5 个平台并行编译）            ││  • linux-amd64                          ││  • linux-arm64                          ││  • windows-amd64                        ││  • darwin-amd64 (Intel Mac)             ││  • darwin-arm64 (Apple Silicon)         │└─────────────────────────────────────────┘    ↓┌─────────────────────────────────────────┐│  release job                            ││  • 下载所有产物                          ││  • 生成 SHA256 校验文件                  ││  • 创建 GitHub Release + 自动生成日志    │└─────────────────────────────────────────┘
+push tag v1.0.0
+    ↓
+┌─────────────────────────────────────────┐
+│  build job（5 个平台并行编译）            │
+│  • linux-amd64                          │
+│  • linux-arm64                          │
+│  • windows-amd64                        │
+│  • darwin-amd64 (Intel Mac)             │
+│  • darwin-arm64 (Apple Silicon)         │
+└─────────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────────┐
+│  release job                            │
+│  • 下载所有产物                          │
+│  • 生成 SHA256 校验文件                  │
+│  • 创建 GitHub Release + 自动生成日志    │
+└─────────────────────────────────────────┘
 ```
 
 ### 四、产物说明
@@ -69,7 +85,9 @@ image-api --version
 构建时通过 `-ldflags` 将 tag 名注入二进制文件：
 
 ```text
-go build -ldflags="-s -w -X main.version=v1.0.0"
+# 在 src 目录内构建，产物输出到项目根目录
+cd src
+go build -ldflags="-s -w -X main.version=v1.0.0" -o ../image-api .
 ```
 
 - 启动日志会显示：`[启动] image-api v1.0.0 | HTTP Server 监听 0.0.0.0:8080`

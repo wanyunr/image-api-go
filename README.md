@@ -8,32 +8,42 @@
 
 ```
 image-api/
-├── main.go          # 入口：配置加载、组件初始化、路由注册、启动服务
-├── config.go        # 配置结构体定义、加载与校验
-├── handler.go       # HTTP 处理器（ServeImage / Health / Reload / 鉴权 / 防盗链）
-├── pool.go          # URL 池管理（文件加载、随机选取、热重载）
-├── imageinfo.go     # 图片元数据探测（Range 请求 + DecodeConfig）
-├── ratelimit.go     # 基于 IP 的滑动窗口限流
-├── util.go          # 通用工具函数（IP提取、UA检测、Referer匹配、URL解析、时间格式化）
-├── config.yaml      # 配置文件
+├── src/                  # Go 工程（模块根目录）
+│   ├── main.go           # 入口：配置加载、组件初始化、路由注册、启动服务
+│   ├── go.mod / go.sum   # 模块定义与依赖锁定
+│   └── app/              # 业务逻辑包（import "image-api/app"）
+│       ├── config.go     # 配置结构体定义、加载与校验
+│       ├── handler.go    # HTTP 处理器（ServeImage / Health / Reload / 鉴权 / 防盗链）
+│       ├── pool.go       # URL 池管理（文件加载、随机选取、热重载）
+│       ├── imageinfo.go  # 图片元数据探测（Range 请求 + DecodeConfig）
+│       ├── ratelimit.go  # 基于 IP 的滑动窗口限流
+│       └── util.go       # 通用工具函数（IP提取、UA检测、Referer匹配、URL解析、时间格式化）
+├── config.yaml           # 配置文件
+├── built.md              # 构建发布教程（GitHub Actions）
+├── README.md
 ├── urls/
 │   ├── portrait.txt
 │   └── landscape.txt
-└── logs/
+├── .github/workflows/    # CI 配置
+└── LICENSE
 ```
 
 ## 快速开始
 
 ```bash
-# 编译
-go build -o image-api .
+# 编译（在 src 目录内执行，产物输出到项目根目录）
+cd src
+go build -o ../image-api .
 
-# 运行（默认读取 config.yaml）
+# 运行（回到项目根目录，默认读取 config.yaml）
+cd ..
 ./image-api
 
 # 指定配置文件
 ./image-api /path/to/config.yaml
 ```
+
+> 说明：Go 模块根目录为 `src/`，请在 `src/` 内执行 `go build` / `go run` / `go test` 等命令。所有运行时路径（配置文件、URL 列表）以**当前工作目录**为基准，推荐在项目根目录运行二进制。
 
 ## 配置说明
 

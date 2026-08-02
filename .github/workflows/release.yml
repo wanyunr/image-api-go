@@ -49,7 +49,8 @@ jobs:
         run: |
           VERSION=${GITHUB_REF_NAME}
           BINARY="image-api-${{ matrix.suffix }}${{ matrix.ext }}"
-          go build -ldflags="-s -w -X main.version=${VERSION}" -o "${BINARY}" .
+          cd src
+          go build -ldflags="-s -w -X main.version=${VERSION}" -o "../${BINARY}" .
           echo "BINARY=${BINARY}" >> $GITHUB_ENV
 
       - name: Upload Artifact
