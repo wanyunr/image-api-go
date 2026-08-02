@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -17,6 +18,28 @@ type ImageJSONResponse struct {
 	Height      int    `json:"height"`
 	Format      string `json:"format"`
 	Filename    string `json:"filename"`
+}
+
+// HealthResponse is returned by /health.
+type HealthResponse struct {
+	Status             string   `json:"status"`
+	Uptime             string   `json:"uptime"`
+	RequestsSinceStart int64    `json:"requests_since_start"`
+	Pool               PoolInfo `json:"pool"`
+}
+
+// PoolInfo contains URL pool counts.
+type PoolInfo struct {
+	Portrait  int `json:"portrait"`
+	Landscape int `json:"landscape"`
+	Total     int `json:"total"`
+}
+
+// ReloadResponse is returned by POST /admin/reload.
+type ReloadResponse struct {
+	Status    string `json:"status"`
+	Portrait  int    `json:"portrait"`
+	Landscape int    `json:"landscape"`
 }
 
 type Handler struct {
@@ -89,7 +112,7 @@ func (h *Handler) ServeImage(w http.ResponseWriter, r *http.Request) {
 
 	imgURL, err := h.pool.Random(orientation)
 	if err != nil {
-		if strings.Contains(err.Error(), "URL pool is empty") {
+		if errors.Is(err, ErrPoolEmpty) {
 			http.Error(w, "Service Unavailable: URL pool is empty", http.StatusServiceUnavailable)
 			return
 		}
@@ -124,14 +147,14 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	uptime := time.Since(h.startTime)
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":               "ok",
-		"uptime":               formatDuration(uptime),
-		"requests_since_start": h.totalReqs.Load(),
-		"pool": map[string]int{
-			"portrait":  portrait,
-			"landscape": landscape,
-			"total":     portrait + landscape,
+	json.NewEncoder(w).Encode(HealthResponse{
+		Status:             "ok",
+		Uptime:             formatDuration(uptime),
+		RequestsSinceStart: h.totalReqs.Load(),
+		Pool: PoolInfo{
+			Portrait:  portrait,
+			Landscape: landscape,
+			Total:     portrait + landscape,
 		},
 	})
 }
@@ -158,10 +181,10 @@ func (h *Handler) Reload(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[reload success] portrait=%d landscape=%d", portrait, landscape)
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":    "reloaded",
-		"portrait":  portrait,
-		"landscape": landscape,
+	json.NewEncoder(w).Encode(ReloadResponse{
+		Status:    "reloaded",
+		Portrait:  portrait,
+		Landscape: landscape,
 	})
 }
 

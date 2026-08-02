@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net/url"
@@ -10,6 +11,9 @@ import (
 	"strings"
 	"sync"
 )
+
+// ErrPoolEmpty 表示 URL 池为空，无可用图片
+var ErrPoolEmpty = errors.New("URL pool is empty")
 
 type URLPool struct {
 	mu        sync.RWMutex
@@ -85,7 +89,7 @@ func (p *URLPool) Random(orientation string) (string, error) {
 	}
 
 	if len(pool) == 0 {
-		return "", fmt.Errorf("URL 池为空: %s", orientation)
+		return "", fmt.Errorf("%w: %s", ErrPoolEmpty, orientation)
 	}
 
 	return pool[rand.Intn(len(pool))], nil

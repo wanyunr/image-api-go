@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -19,6 +20,11 @@ type Config struct {
 type ServerConfig struct {
 	Host string `yaml:"host"`
 	Port int    `yaml:"port"`
+	// BasePath URL 路径前缀。部署在反向代理子目录（如 /api、/api）下时，
+	// 设为此前缀值即可正常响应，无需反代做路径 rewrite。
+	// 默认为空（等同于 /），表示无前缀。
+	// 示例：BasePath="/api" → 路由注册为 /api/、/api/health、/api/admin/reload
+	BasePath string `yaml:"base_path"`
 }
 
 type URLsConfig struct {
@@ -118,6 +124,17 @@ func createDefaultConfig(path string) error {
 func (c *Config) Validate() error {
 	if c.Server.Port <= 0 || c.Server.Port > 65535 {
 		return fmt.Errorf("server.port 必须在 1-65535 之间，当前值: %d", c.Server.Port)
+	}
+	if c.Server.BasePath != "" {
+		if !strings.HasPrefix(c.Server.BasePath, "/") {
+			return fmt.Errorf("server.base_path 必须以 / 开头，当前值: %q", c.Server.BasePath)
+		}
+		if strings.HasSuffix(c.Server.BasePath, "/") {
+			return fmt.Errorf("server.base_path 不应以 / 结尾，当前值: %q", c.Server.BasePath)
+		}
+		if strings.ContainsAny(c.Server.BasePath, "?#") {
+			return fmt.Errorf("server.base_path 不能包含特殊字符，当前值: %q", c.Server.BasePath)
+		}
 	}
 	if c.URLs.Portrait == "" {
 		return fmt.Errorf("urls.portrait 不能为空")

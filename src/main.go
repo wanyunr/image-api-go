@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"image-api/app"
 	"log"
-	"math/rand"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -14,7 +14,6 @@ import (
 var version = "dev"
 
 func main() {
-	rand.Seed(time.Now().UnixNano())
 
 	// 支持 --version / -v 查看版本号
 	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
@@ -55,11 +54,20 @@ func main() {
 	// 初始化 Handler
 	handler := app.NewHandler(cfg, pool, limiter)
 
-	// 路由
+	// 路由（支持 server.base_path 前缀，默认空=无前缀）
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", handler.ServeImage)
-	mux.HandleFunc("/health", handler.Health)
-	mux.HandleFunc("/admin/reload", handler.Reload)
+	bp := strings.TrimRight(cfg.Server.BasePath, "/")
+	if bp != "" {
+		sub := http.NewServeMux()
+		sub.HandleFunc("/", handler.ServeImage)
+		sub.HandleFunc("/health", handler.Health)
+		sub.HandleFunc("/admin/reload", handler.Reload)
+		mux.Handle(bp+"/", http.StripPrefix(bp, sub))
+	} else {
+		mux.HandleFunc("/", handler.ServeImage)
+		mux.HandleFunc("/health", handler.Health)
+		mux.HandleFunc("/admin/reload", handler.Reload)
+	}
 
 	// 启动 HTTP Server（显式设置超时，防 Slowloris 慢连接攻击）
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
@@ -75,6 +83,9 @@ func main() {
 	log.Printf("[鉴权] enabled=%v", cfg.Auth.Enabled)
 	log.Printf("[限流] enabled=%v", cfg.RateLimit.Enabled)
 	log.Printf("[防盗链] enabled=%v", cfg.Referer.Enabled)
+	if cfg.Server.BasePath != "" {
+		log.Printf("[路径前缀] base_path=%s", cfg.Server.BasePath)
+	}
 
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("[服务异常] %v", err)

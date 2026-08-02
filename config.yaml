@@ -1,22 +1,30 @@
 server:
   host: "0.0.0.0"
   port: 28085
+  # 路径前缀：用于反代子目录场景（如 /acg、/api）。
+  # 设为 /acg 后，路由自动变为 /acg/、/acg/health、/acg/admin/reload；
+  # 配合 Nginx location /acg/ { proxy_pass http://127.0.0.1:28085/acg/; } 即可，无需 rewrite。
+  base_path: "/api"
 
+# 随机图片 URL 列表
 urls:
   portrait: "urls/portrait.txt"
   landscape: "urls/landscape.txt"
 
+# Token 鉴权
 auth:
   enabled: false
   tokens:
     - "your_secret_token"
 
+# 全局限流（所有请求合计，不按 IP 分桶）
 rate_limit:
   enabled: false
   per_minute: 30
   per_hour: 120
   per_day: 300
 
+# Referer 防盗链
 referer:
   enabled: false
   allow_empty: true

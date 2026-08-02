@@ -103,6 +103,7 @@ go test -race ./...  # 竞态检测（需要 CGO_ENABLED=1；Windows 需安装 g
 server:
   host: "0.0.0.0"
   port: 28085
+  base_path: ""                  # 反代子目录前缀（可选，默认为空=无前缀）
 
 urls:
   portrait: "urls/portrait.txt"    # 竖屏 URL 列表
@@ -261,3 +262,35 @@ curl "http://localhost:28085/?token=your-secret-token"
 ```
 Client → Cloudflare / Nginx → Go API → 返回 CDN/R2/OSS 图片 URL
 ```
+
+> 限流为全局限额（与来源 IP 无关），伪造转发头无法绕过；若需要按来源限制，请在前置 Nginx / Cloudflare 层配置。
+
+### 反代子目录部署
+
+如果希望以 `https://example.com/api/` 这样的**子目录路径**反代到本服务，无需在 Nginx 侧做路径 rewrite，只需在 `config.yaml` 中配置 `server.base_path`：
+
+```yaml
+server:
+  base_path: "/api"    # 路由自动变为 /api/、/api/health、/api/admin/reload
+```
+
+**Nginx 反代配置**（前面**不做 rewrite**，原样转发即可）：
+
+```nginx
+location /api/ {
+    proxy_pass http://127.0.0.1:28085/api/;   # 路径不动，后端自己识别前缀
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+```
+
+**请求路径映射**（`base_path: "/api"` 时）：
+
+| 用户访问 | 反代转发 | 后端路由（base_path 生效后） |
+|----------|----------|-------------------------------|
+| `example.com/api/` | `/api/` | `/api/` → 正常响应 |
+| `example.com/api/?format=json` | `/api/?format=json` | `/api/` → 正常响应 |
+| `example.com/api/health` | `/api/health` | `/api/health` → 健康检查 |
+
+> 原理：`http.StripPrefix` 在请求到达 handler 前自动剥掉前缀，handler 内部逻辑完全不受影响。默认 `base_path` 为空（等同于 `/`），行为与之前完全一致。

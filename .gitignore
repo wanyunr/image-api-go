@@ -4,3 +4,6 @@ image-api.exe
 
 # 工具数据（WorkBuddy 工作区记忆）
 .workbuddy/
+src/config.yaml
+src/urls/landscape.txt
+src/urls/portrait.txt
