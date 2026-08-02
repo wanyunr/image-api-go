@@ -13,7 +13,7 @@
 |------|------|
 | `docker/Dockerfile` | 多阶段构建：`golang:1.21-alpine` 编译 → `alpine` 运行，产物为纯静态二进制 |
 | `docker/docker-compose.yml` | 编排：构建镜像、映射端口、环境变量、挂载配置与 URL 列表 |
-| `docker/.env.example` | 环境变量示例（端口、时区），复制为 `.env` 后生效 |
+| `docker/.env.example` | 环境变量示例（端口、时区、Go 模块代理），复制为 `.env` 后生效 |
 | `.dockerignore` | 排除无关文件，减小构建上下文（位于项目根，Docker 要求其在构建上下文根目录） |
 
 ### 三、构建并启动
@@ -33,7 +33,7 @@ docker compose ps
 
 # 验证服务
 curl http://127.0.0.1:28085/health
-# {"pool":{...},"status":"ok",...}
+# {"status":"ok","uptime":"2s","requests_since_start":0,"pool":{"portrait":3,"landscape":3,"total":6}}
 ```
 
 > 说明：`docker-compose.yml` 的构建上下文指向项目根（源码在 `src/`），因此每次构建都会读取最新的 `src/` 源码。
@@ -96,7 +96,6 @@ docker compose up -d --build
 docker compose build --build-arg GOPROXY=https://goproxy.cn,direct
 docker compose up -d
 ```
-
 
 **2. 容器内访问图片返回 503**
 

@@ -4,7 +4,7 @@ server:
   # 路径前缀：用于反代子目录场景（如 /acg、/api）。
   # 设为 /acg 后，路由自动变为 /acg/、/acg/health、/acg/admin/reload；
   # 配合 Nginx location /acg/ { proxy_pass http://127.0.0.1:28085/acg/; } 即可，无需 rewrite。
-  base_path: "/api"
+  base_path: "/"
 
 # 随机图片 URL 列表
 urls:

@@ -20,7 +20,7 @@ type Config struct {
 type ServerConfig struct {
 	Host string `yaml:"host"`
 	Port int    `yaml:"port"`
-	// BasePath URL 路径前缀。部署在反向代理子目录（如 /api、/api）下时，
+	// BasePath URL 路径前缀。部署在反向代理子目录（如 /api）下时，
 	// 设为此前缀值即可正常响应，无需反代做路径 rewrite。
 	// 默认为空（等同于 /），表示无前缀。
 	// 示例：BasePath="/api" → 路由注册为 /api/、/api/health、/api/admin/reload

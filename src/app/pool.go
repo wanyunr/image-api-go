@@ -26,37 +26,13 @@ func NewURLPool() *URLPool {
 }
 
 func (p *URLPool) Load(portraitFile, landscapeFile string) (bool, error) {
-	created := false
-	portrait, err := loadURLFile(portraitFile)
+	portrait, createdPortrait, err := loadOrCreate(portraitFile, "# portrait URL list\n# Add one image URL per line\n", "竖屏")
 	if err != nil {
-		if os.IsNotExist(err) {
-			if err := createDefaultURLFile(portraitFile, "# portrait URL list\n# Add one image URL per line\n"); err != nil {
-				return false, fmt.Errorf("创建默认竖屏 URL 列表失败: %w", err)
-			}
-			created = true
-			portrait, err = loadURLFile(portraitFile)
-			if err != nil {
-				return false, fmt.Errorf("加载竖屏 URL 列表失败: %w", err)
-			}
-		} else {
-			return false, fmt.Errorf("加载竖屏 URL 列表失败: %w", err)
-		}
+		return false, err
 	}
-
-	landscape, err := loadURLFile(landscapeFile)
+	landscape, createdLandscape, err := loadOrCreate(landscapeFile, "# landscape URL list\n# Add one image URL per line\n", "横屏")
 	if err != nil {
-		if os.IsNotExist(err) {
-			if err := createDefaultURLFile(landscapeFile, "# landscape URL list\n# Add one image URL per line\n"); err != nil {
-				return false, fmt.Errorf("创建默认横屏 URL 列表失败: %w", err)
-			}
-			created = true
-			landscape, err = loadURLFile(landscapeFile)
-			if err != nil {
-				return false, fmt.Errorf("加载横屏 URL 列表失败: %w", err)
-			}
-		} else {
-			return false, fmt.Errorf("加载横屏 URL 列表失败: %w", err)
-		}
+		return false, err
 	}
 
 	p.mu.Lock()
@@ -64,7 +40,26 @@ func (p *URLPool) Load(portraitFile, landscapeFile string) (bool, error) {
 	p.landscape = landscape
 	p.mu.Unlock()
 
-	return created, nil
+	return createdPortrait || createdLandscape, nil
+}
+
+// loadOrCreate 加载 URL 列表文件；文件不存在时创建默认文件后重读。
+func loadOrCreate(path, defaultContent, name string) ([]string, bool, error) {
+	urls, err := loadURLFile(path)
+	if err == nil {
+		return urls, false, nil
+	}
+	if !os.IsNotExist(err) {
+		return nil, false, fmt.Errorf("加载%s URL 列表失败: %w", name, err)
+	}
+	if err := createDefaultURLFile(path, defaultContent); err != nil {
+		return nil, false, fmt.Errorf("创建默认%s URL 列表失败: %w", name, err)
+	}
+	urls, err = loadURLFile(path)
+	if err != nil {
+		return nil, false, fmt.Errorf("加载%s URL 列表失败: %w", name, err)
+	}
+	return urls, true, nil
 }
 
 func createDefaultURLFile(path, content string) error {

@@ -56,18 +56,15 @@ func main() {
 
 	// 路由（支持 server.base_path 前缀，默认空=无前缀）
 	mux := http.NewServeMux()
-	bp := strings.TrimRight(cfg.Server.BasePath, "/")
-	if bp != "" {
+	target := mux
+	if bp := strings.TrimRight(cfg.Server.BasePath, "/"); bp != "" {
 		sub := http.NewServeMux()
-		sub.HandleFunc("/", handler.ServeImage)
-		sub.HandleFunc("/health", handler.Health)
-		sub.HandleFunc("/admin/reload", handler.Reload)
 		mux.Handle(bp+"/", http.StripPrefix(bp, sub))
-	} else {
-		mux.HandleFunc("/", handler.ServeImage)
-		mux.HandleFunc("/health", handler.Health)
-		mux.HandleFunc("/admin/reload", handler.Reload)
+		target = sub
 	}
+	target.HandleFunc("/", handler.ServeImage)
+	target.HandleFunc("/health", handler.Health)
+	target.HandleFunc("/admin/reload", handler.Reload)
 
 	// 启动 HTTP Server（显式设置超时，防 Slowloris 慢连接攻击）
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)

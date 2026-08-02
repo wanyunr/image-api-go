@@ -16,7 +16,7 @@ image-api/
 │       ├── handler.go    # HTTP 处理器（ServeImage / Health / Reload / 鉴权 / 防盗链）
 │       ├── pool.go       # URL 池管理（文件加载、随机选取、热重载）
 │       ├── imageinfo.go  # 图片元数据探测（Range 请求 + DecodeConfig）
-│       ├── ratelimit.go  # 基于 IP 的滑动窗口限流
+│       ├── ratelimit.go  # 全局限流（所有请求共享分/时/天三级额度）
 │       └── util.go       # 通用工具函数（IP提取、UA检测、Referer匹配、URL解析、时间格式化）
 ├── config.yaml           # 配置文件
 ├── docs/                 # 项目文档
@@ -103,7 +103,7 @@ go test -race ./...  # 竞态检测（需要 CGO_ENABLED=1；Windows 需安装 g
 server:
   host: "0.0.0.0"
   port: 28085
-  base_path: ""                  # 反代子目录前缀（可选，默认为空=无前缀）
+  # base_path: "/"              # 反代子目录前缀（可选，默认空=无前缀）
 
 urls:
   portrait: "urls/portrait.txt"    # 竖屏 URL 列表
@@ -150,6 +150,8 @@ https://cdn.example.com/img/002.jpg
 GET /
 ```
 
+> 若配置了 `base_path`（如 `/api`），端点前缀相应变化：`/api/`、`/api/health`、`POST /api/admin/reload`。
+
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
 | `orientation` | `portrait`（竖屏）/ `landscape`（横屏） | 根据 UA 自动判断 |
@@ -179,7 +181,7 @@ http://localhost:28085/?orientation=portrait
 
 # JSON 格式
 curl "http://localhost:28085/?format=json"
-# {"url":"https://cdn.example.com/p/001.jpg","orientation":"landscape"}
+# {"url":"https://cdn.example.com/p/001.jpg","orientation":"landscape","width":1920,"height":1080,"format":"jpeg","filename":"001.jpg"}
 
 # 纯文本
 curl "http://localhost:28085/?format=text"
@@ -193,7 +195,7 @@ GET /health
 ```
 
 ```json
-{"status":"ok","portrait":3,"landscape":3}
+{"status":"ok","uptime":"2s","requests_since_start":0,"pool":{"portrait":3,"landscape":3,"total":6}}
 ```
 
 ### 热重载 URL 列表
