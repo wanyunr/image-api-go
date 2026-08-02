@@ -1,0 +1,25 @@
+server:
+  host: "0.0.0.0"
+  port: 28085
+
+urls:
+  portrait: "urls/portrait.txt"
+  landscape: "urls/landscape.txt"
+
+auth:
+  enabled: false
+  tokens:
+    - "your_secret_token"
+
+rate_limit:
+  enabled: false
+  per_minute: 30
+  per_hour: 120
+  per_day: 300
+
+referer:
+  enabled: false
+  allow_empty: true
+  whitelist:
+    - "example.com"
+    - "*.example.com"
