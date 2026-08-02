@@ -19,7 +19,9 @@ image-api/
 │       ├── ratelimit.go  # 基于 IP 的滑动窗口限流
 │       └── util.go       # 通用工具函数（IP提取、UA检测、Referer匹配、URL解析、时间格式化）
 ├── config.yaml           # 配置文件
-├── built.md              # 构建发布教程（GitHub Actions）
+├── docs/                 # 项目文档
+│   ├── built.md          # 构建发布教程（GitHub Actions）
+│   └── systemd.md        # Linux systemd 服务部署教程
 ├── README.md
 ├── urls/
 │   ├── portrait.txt
@@ -44,6 +46,8 @@ cd ..
 ```
 
 > 说明：Go 模块根目录为 `src/`，请在 `src/` 内执行 `go build` / `go run` / `go test` 等命令。所有运行时路径（配置文件、URL 列表）以**当前工作目录**为基准，推荐在项目根目录运行二进制。
+
+> 生产环境部署（systemd 服务、开机自启、日志管理）见 [docs/systemd.md](docs/systemd.md)。
 
 ## 开发调试
 
