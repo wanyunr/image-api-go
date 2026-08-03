@@ -244,6 +244,7 @@ class TaskConfig:
     skip_existing: bool = True
     retries: int = 2
     flat: bool = False
+    url_prefix: Optional[str] = None   # 配置后任务完成时生成 URL 列表（默认不生成）
 
     #: 允许直接写在任务顶层（平铺）的转换器参数键，无需嵌套 params
     PARAM_KEYS = ("quality", "method", "tier", "lossless", "alpha_quality")
@@ -277,6 +278,8 @@ class TaskConfig:
             skip_existing=bool(cfg.get("skip_existing", True)),
             retries=int(cfg.get("retries", 2)),
             flat=bool(cfg.get("flat", False)),
+            url_prefix=(str(cfg["url_prefix"]).rstrip("/")
+                        if cfg.get("url_prefix") else None),
         )
 
 
@@ -491,6 +494,10 @@ def run_task(task: TaskConfig, log: logging.Logger,
     else:
         _run_task_serial(task, converter, files, stats, log)
 
+    # 配置了 url_prefix 时生成图片 URL 列表（默认不生成）
+    if task.url_prefix:
+        _write_url_list(task, log)
+
     log.info("[%s] 完成: 成功 %d，跳过 %d，失败 %d（共 %d 个文件）",
              task.name, stats.converted, stats.skipped, stats.failed, len(files))
     if stats.failures:
@@ -498,6 +505,40 @@ def run_task(task: TaskConfig, log: logging.Logger,
         for f in stats.failures:
             log.warning("  - %s", f)
     return stats
+
+
+def _write_url_list(task: TaskConfig, log: logging.Logger) -> None:
+    """增量更新 URL 列表文件，放在本脚本（batch_convert.py）同级目录。
+
+    文件名按 target 目录名命名（如 target 为 portrait -> portrait.txt）；
+    每行: <基础域名>/<target目录名>/<相对路径>，保留子目录结构。
+    增量语义：读取已有列表，与当前输出目录的 URL 合并去重后写回——
+    已存在的 URL 不会重复写入，只有新增文件才会追加。
+    """
+    list_path = Path(__file__).resolve().parent / f"{task.target.name}.txt"
+
+    # 当前输出目录中的 URL
+    current = []
+    for p in sorted(task.target.rglob("*")):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(task.target).as_posix()
+        current.append(f"{task.url_prefix}/{task.target.name}/{rel}")
+
+    # 已有列表（增量合并的基础）
+    existing: set = set()
+    if list_path.exists():
+        existing = {ln.strip() for ln in
+                    list_path.read_text(encoding="utf-8").splitlines() if ln.strip()}
+
+    merged = sorted(existing | set(current))
+    added = len(set(current) - existing)
+    try:
+        list_path.write_text("\n".join(merged) + ("\n" if merged else ""), encoding="utf-8")
+        log.info("[%s] URL 列表增量更新: %s（新增 %d 条，共 %d 条）",
+                 task.name, list_path, added, len(merged))
+    except OSError as exc:
+        log.error("[%s] 更新 URL 列表失败: %s (%s)", task.name, list_path, exc)
 
 
 def _run_task_serial(task: TaskConfig, converter: Converter, files: list,

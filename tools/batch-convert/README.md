@@ -72,15 +72,37 @@ tasks:
 | `skip_existing` | 目标已存在则跳过（断点续传） | true |
 | `retries` | 失败重试次数 | 2 |
 | `flat` | 输出平铺到目标根目录（不保留子目录结构） | false |
+| `url_prefix` | 基础域名，配置后任务完成时生成 URL 列表（文件按 target 目录名命名，如 `portrait.txt`） | 不生成 |
 | `include` / `exclude` | 文件过滤通配符列表 | 默认只处理图片格式 |
 
 过滤规则：通配符匹配相对源目录的完整路径（含子目录），如 `"sub/*.jpg"` 只处理 `sub/` 下的 jpg。不写 `include` 时默认处理所有图片格式（PNG/JPG/JPEG/BMP/TIFF/GIF/WebP，WebP 直接拷贝）；写 `["*"]` 处理全部文件。
+
+### 生成 URL 列表
+
+配置 `url_prefix`（基础域名）后，任务完成时生成 URL 列表文件，**放在本脚本（`batch_convert.py`）同级目录**，文件名自动取 target 目录名（如 target 最后一级是 `portrait`，则生成 `portrait.txt`）。URL 规则：**`基础域名 / target目录名 / 输出文件相对路径`**：
+
+```yaml
+source: C:/你的源目录
+target: C:/你的输出目录/landscape
+url_prefix: https://r2-img.xx.xx/xx
+```
+
+生成 `tools/batch-convert/landscape.txt`：
+
+```
+https://r2-img.xx.xx/xx/landscape/a.webp
+https://r2-img.xx.xx/xx/landscape/sub/b.webp
+```
+
+- 多路径场景下每组自动生成各自命名的列表（`landscape.txt`、`portrait.txt`），无需配置文件名
+- 列表为**增量写入 + 去重**：读取已有列表与当前输出目录合并，已存在的 URL 不重复写入，只有新增文件才追加；日志显示"新增 N 条，共 M 条"
+- 不配置 `url_prefix` 则不生成列表（默认关闭）
 
 ## 转换器与质量
 
 | 转换器 | 说明 | 主要参数 |
 | --- | --- | --- |
-| `image_webp`（默认） | 图片转 WebP（GIF 取首帧、透明通道保留、EXIF 方向自动修正） | tier / quality / method / lossless / alpha_quality |
+| `image_webp`（默认） | 图片转 WebP（GIF 取首帧、透明通道保留、EXIF 方向自动修正；已是 WebP 的直接拷贝） | tier / quality / method / lossless / alpha_quality |
 | `copy` | 原样复制文件 | 无 |
 
 ```bash

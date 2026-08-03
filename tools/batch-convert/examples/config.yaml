@@ -28,5 +28,9 @@ target: C:/你的输出目录
 # skip_existing: true        # 目标已存在则跳过，即断点续传（默认 true）
 # retries: 2                 # 失败重试次数（默认 2）
 # flat: false                # true 时输出平铺到目标根目录（不保留子目录结构）
+# url_prefix: https://img.xx.xx/xx  # 基础域名，配置后生成 URL 列表（默认不生成）
+# 说明: 列表文件生成在 batch_convert.py 同级目录，文件名取 target 目录名
+#      （如 target 为 portrait 则生成 portrait.txt），增量写入 + 去重
+#      URL = 基础域名/target目录名/文件相对路径，如 .../xx/portrait/xxx.webp
 # include: ["*.png", "*.jpg"]  # 只处理这些文件；不写则处理所有图片格式
 # exclude: ["*.bak"]           # 排除这些文件
