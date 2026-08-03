@@ -141,7 +141,15 @@ class ImageWebpConverter(Converter):
 
     def convert(self, src: Path, dst: Path, params: dict) -> None:
         # 延迟导入：仅在使用该转换器时依赖 Pillow
-        from PIL import Image, ImageOps, UnidentifiedImageError
+        from PIL import Image, ImageOps
+
+        # 已是 WebP 的文件直接拷贝，不做二次压缩
+        if src.suffix.lower() == ".webp":
+            with Image.open(src) as check:   # 校验完整性，损坏文件在此抛异常
+                check.verify()
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            return
 
         if "tier" in params:
             quality, method, lossless = TIERS[params["tier"]]
@@ -240,9 +248,10 @@ class TaskConfig:
     #: 允许直接写在任务顶层（平铺）的转换器参数键，无需嵌套 params
     PARAM_KEYS = ("quality", "method", "tier", "lossless", "alpha_quality")
 
-    #: 未显式指定 include 时的默认过滤：只处理常见图片格式
-    #: （想处理所有文件请显式写 include: ["*"]）
-    DEFAULT_INCLUDE = ["*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tif", "*.tiff", "*.gif"]
+    #: 未显式指定 include 时的默认过滤：处理所有常见图片格式
+    #: （webp 直接拷贝；想处理所有文件请显式写 include: ["*"]）
+    DEFAULT_INCLUDE = ["*.png", "*.jpg", "*.jpeg", "*.bmp",
+                       "*.tif", "*.tiff", "*.gif", "*.webp"]
 
     @classmethod
     def from_dict(cls, cfg: dict, index: int = 0) -> "TaskConfig":

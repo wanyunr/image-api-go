@@ -74,7 +74,7 @@ tasks:
 | `flat` | 输出平铺到目标根目录（不保留子目录结构） | false |
 | `include` / `exclude` | 文件过滤通配符列表 | 默认只处理图片格式 |
 
-过滤规则：通配符匹配相对源目录的完整路径（含子目录），如 `"sub/*.jpg"` 只处理 `sub/` 下的 jpg。不写 `include` 时默认处理所有图片格式（PNG/JPG/JPEG/BMP/TIFF/GIF）；写 `["*"]` 处理全部文件。
+过滤规则：通配符匹配相对源目录的完整路径（含子目录），如 `"sub/*.jpg"` 只处理 `sub/` 下的 jpg。不写 `include` 时默认处理所有图片格式（PNG/JPG/JPEG/BMP/TIFF/GIF/WebP，WebP 直接拷贝）；写 `["*"]` 处理全部文件。
 
 ## 转换器与质量
 
