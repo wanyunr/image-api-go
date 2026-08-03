@@ -1,6 +1,6 @@
 # Image API
 
-轻量级随机图片 API，使用 Go 标准库构建，零框架、无数据库依赖。
+轻量级随机图片 API，使用 Go 及官方扩展库构建，零框架、无数据库依赖。图片元数据探测支持 WebP（`golang.org/x/image`）。
 
 访问 API 即自动 302 重定向到一张随机图片，浏览器直接展示，图片不经过本服务器。
 
@@ -15,7 +15,7 @@ image-api/
 │       ├── config.go     # 配置结构体定义、加载与校验
 │       ├── handler.go    # HTTP 处理器（ServeImage / Health / Reload / 鉴权 / 防盗链）
 │       ├── pool.go       # URL 池管理（文件加载、随机选取、热重载）
-│       ├── imageinfo.go  # 图片元数据探测（Range 请求 + DecodeConfig）
+│       ├── imageinfo.go  # 图片元数据探测（Range 请求 + DecodeConfig，支持 WebP）
 │       ├── ratelimit.go  # 全局限流（所有请求共享分/时/天三级额度）
 │       └── util.go       # 通用工具函数（IP提取、UA检测、Referer匹配、URL解析、时间格式化）
 ├── config.yaml           # 配置文件
@@ -257,7 +257,7 @@ curl "http://localhost:28085/?token=your-secret-token"
 
 - URL 列表启动时一次性加载到内存，请求时不读磁盘
 - 图片不经过本服务器，仅返回 302 重定向
-- 纯标准库实现，无第三方框架开销
+- 仅依赖 `gopkg.in/yaml.v3` 与官方扩展库 `golang.org/x/image`（WebP 解码），无第三方框架
 
 **推荐部署架构：**
 

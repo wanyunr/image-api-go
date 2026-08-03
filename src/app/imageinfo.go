@@ -8,6 +8,8 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	_ "golang.org/x/image/webp" // 注册 WebP 解码器（R2/CDN 上的 .webp 图片）
 )
 
 // ImageInfo 图片元数据
