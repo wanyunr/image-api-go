@@ -1,12 +1,24 @@
 # 编译产物
 image-api
 image-api.exe
+# 工具数据（WorkBuddy 工作区记忆）
+.workbuddy/
+# 运行时配置（含鉴权 token；模板见 config.yaml.example）
+/config.yaml
+src/config.yaml
+
+# 运行时 URL 池（真实图片 URL，可能含隐私；模板见 urls/*.txt.example）
+/urls/*.txt
+src/urls/*.txt
+
+# 转换工具运行产物（按 target 命名的 URL 列表、用户配置、输出目录）
+/tools/batch-convert/*.txt
+/tools/batch-convert/my_config*.yaml
+tools/batch-convert/portrait/
+tools/batch-convert/landscape/
+
+# 日志
+*.log
 
 # 工具数据（WorkBuddy 工作区记忆）
 .workbuddy/
-src/config.yaml
-src/urls/landscape.txt
-src/urls/portrait.txt
-tools/batch-convert/my_config.yaml
-tools/batch-convert/portrait/
-tools/batch-convert/landscape/
