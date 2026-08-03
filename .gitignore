@@ -7,3 +7,4 @@ image-api.exe
 src/config.yaml
 src/urls/landscape.txt
 src/urls/portrait.txt
+tools/batch-convert/my_config.yaml

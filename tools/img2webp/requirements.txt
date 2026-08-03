@@ -1,0 +1,4 @@
+# img2webp 依赖说明
+# Pillow: Python 图像处理库，内置 WebP 编解码支持
+# （Windows / macOS / Linux 官方 wheel 均已捆绑 libwebp，安装即可用）
+Pillow>=10.0.0

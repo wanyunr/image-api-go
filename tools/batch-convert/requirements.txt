@@ -1,0 +1,6 @@
+# batch_convert 依赖说明
+# Pillow: 图片处理库，内置 WebP 编解码支持（image_webp 转换器必需）
+Pillow>=10.0.0
+
+# 可选: 若配置文件使用 YAML 格式，需额外安装
+pyyaml>=6.0

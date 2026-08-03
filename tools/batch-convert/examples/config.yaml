@@ -1,0 +1,32 @@
+# batch_convert 配置示例
+#
+# 用法:
+#   1. 复制本文件: cp config.yaml my_config.yaml
+#   2. 把下面的路径改成你自己的目录（源目录必须已存在，输出目录会自动创建）
+#   3. 运行: python batch_convert.py -c my_config.yaml
+
+# ==== 单路径写法（最常用）====
+source: C:/你的源目录
+target: C:/你的输出目录
+
+# ==== 多路径写法：多个 source/target 一一对应，公共参数对全部组生效 ====
+# source:
+#   - C:/你的源目录1
+#   - C:/你的源目录2
+# target:
+#   - C:/你的输出目录1
+#   - C:/你的输出目录2
+# 说明: source 第 N 项对应 target 第 N 项；不写 target 时自动输出到 <源目录名>_converted
+
+# ==== 可选进阶项（不写则用默认值，作用于上面的单/多路径）====
+# converter: image_webp      # 转换器，默认 image_webp（图片转 WebP）
+# tier: photo                # 质量预设: draft / balanced / photo / high / lossless
+# quality: 82                # 或细粒度: 画质 0-100（默认 75）
+# method: 4                  # 压缩努力度 0-6（默认 4）
+# lossless: false            # 无损模式
+# recursive: true            # 递归处理子目录（默认 true）
+# skip_existing: true        # 目标已存在则跳过，即断点续传（默认 true）
+# retries: 2                 # 失败重试次数（默认 2）
+# flat: false                # true 时输出平铺到目标根目录（不保留子目录结构）
+# include: ["*.png", "*.jpg"]  # 只处理这些文件；不写则处理所有图片格式
+# exclude: ["*.bak"]           # 排除这些文件
