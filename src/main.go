@@ -1,67 +1,27 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"image-api/app"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 )
 
-// version 由 ldflags 在构建时注入
 var version = "dev"
 
-func newBasePathHandler(basePath string, target http.Handler) http.Handler {
-	basePath = strings.TrimRight(basePath, "/")
-	if basePath == "" {
-		return target
-	}
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-		if path == basePath {
-			req := r.Clone(r.Context())
-			req.URL = cloneURL(r.URL)
-			req.URL.Path = "/"
-			target.ServeHTTP(w, req)
-			return
-		}
-
-		if strings.HasPrefix(path, basePath+"/") {
-			req := r.Clone(r.Context())
-			req.URL = cloneURL(r.URL)
-			req.URL.Path = strings.TrimPrefix(path, basePath)
-			if req.URL.Path == "" {
-				req.URL.Path = "/"
-			}
-			target.ServeHTTP(w, req)
-			return
-		}
-
-		http.NotFound(w, r)
-	})
-}
-
-func cloneURL(u *url.URL) *url.URL {
-	if u == nil {
-		return nil
-	}
-	cloned := *u
-	return &cloned
-}
-
 func main() {
-
-	// 支持 --version / -v 查看版本号
 	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
 		fmt.Printf("image-api %s\n", version)
 		return
 	}
 
-	// 读取配置（默认 config.yaml，可通过命令行参数覆盖）
 	cfgPath := "config.yaml"
 	if len(os.Args) > 1 {
 		cfgPath = os.Args[1]
@@ -76,40 +36,38 @@ func main() {
 	}
 	log.Printf("[配置] 加载成功: %s", cfgPath)
 
-	// 加载 URL 池
 	pool := app.NewURLPool()
-	createdURLFiles, err := pool.Load(cfg.URLs.Portrait, cfg.URLs.Landscape)
+	pool.SetMetadataMode(cfg.Server.MetadataMode)
+	stats, err := pool.Load(cfg.URLs.Portrait, cfg.URLs.Landscape, cfg.Server.CacheDir)
 	if err != nil {
 		log.Fatalf("[启动失败] %v", err)
 	}
-	if createdURLFiles {
+	if stats.CreatedFiles {
 		log.Printf("[URL池] 默认 URL 列表已生成: %s, %s", cfg.URLs.Portrait, cfg.URLs.Landscape)
 	}
-	portrait, landscape := pool.Count()
-	log.Printf("[URL池] portrait=%d landscape=%d", portrait, landscape)
+	log.Printf("[URL池] portrait=%d landscape=%d pending=%d dead=%d", stats.Portrait, stats.Landscape, stats.Pending, stats.Dead)
 
-	// 初始化限流器（全局限流，无需清理任务）
 	limiter := app.NewRateLimiter(cfg.RateLimit)
-
-	// 初始化 Handler
 	handler := app.NewHandler(cfg, pool, limiter)
 
-	// 路由（支持 server.base_path 前缀，默认空=无前缀）
-	target := http.NewServeMux()
+	mux := http.NewServeMux()
+	target := mux
+	if bp := strings.TrimRight(cfg.Server.BasePath, "/"); bp != "" {
+		sub := http.NewServeMux()
+		mux.Handle(bp+"/", http.StripPrefix(bp, sub))
+		target = sub
+	}
 	target.HandleFunc("/", handler.ServeImage)
 	target.HandleFunc("/health", handler.Health)
-	target.HandleFunc("/admin/reload", handler.Reload)
+	adminMux := http.NewServeMux()
+	adminMux.HandleFunc("/admin/reload", handler.Reload)
+	adminMux.HandleFunc("/admin/clear-dead", handler.ClearDead)
+	target.Handle("/admin/", handler.AdminAuth(adminMux))
 
-	rootHandler := http.Handler(target)
-	if bp := strings.TrimRight(cfg.Server.BasePath, "/"); bp != "" {
-		rootHandler = newBasePathHandler(bp, target)
-	}
-
-	// 启动 HTTP Server（显式设置超时，防 Slowloris 慢连接攻击）
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           rootHandler,
+		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      20 * time.Second,
@@ -117,13 +75,43 @@ func main() {
 	}
 	log.Printf("[启动] image-api %s | HTTP Server 监听 %s", version, addr)
 	log.Printf("[鉴权] enabled=%v", cfg.Auth.Enabled)
+	if cfg.Auth.AdminToken != "" {
+		log.Printf("[管理端点] /admin/* 使用专用 admin_token 认证")
+	} else if !cfg.Auth.Enabled {
+		log.Printf("[警告] 未配置 auth.admin_token 且 auth 未启用，/admin/* 将拒绝访问（401）；请设置 auth.admin_token")
+	}
 	log.Printf("[限流] enabled=%v", cfg.RateLimit.Enabled)
 	log.Printf("[防盗链] enabled=%v", cfg.Referer.Enabled)
 	if cfg.Server.BasePath != "" {
 		log.Printf("[路径前缀] base_path=%s", cfg.Server.BasePath)
 	}
 
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("[服务异常] %v", err)
+	if cfg.Server.MetadataMode == "prefetch" {
+		go pool.RetryPending()
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	if cfg.Server.MetadataMode == "prefetch" {
+		go pool.MetadataWorker(ctx.Done())
+	}
+
+	go func() {
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("[服务异常] %v", err)
+			os.Exit(1)
+		}
+	}()
+
+	<-ctx.Done()
+	stop()
+	log.Printf("[退出] 正在关闭...")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("[退出] 关闭出错: %v", err)
+	} else {
+		log.Printf("[退出] 已关闭")
 	}
 }

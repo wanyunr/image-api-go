@@ -7,9 +7,10 @@ import (
 	_ "image/png"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
-	_ "golang.org/x/image/webp" // 注册 WebP 解码器（R2/CDN 上的 .webp 图片）
+	_ "golang.org/x/image/webp"
 )
 
 // ImageInfo 图片元数据
@@ -20,27 +21,24 @@ type ImageInfo struct {
 	Format string `json:"format"`
 }
 
-// imageClient 全局共享 HTTP 客户端（连接复用，避免每次 JSON 请求重建 TCP 握手）
-var imageClient = &http.Client{Timeout: 10 * time.Second}
+var imageClient = &http.Client{Timeout: 5 * time.Second}
 
-// FetchImageInfo 请求时探测图片尺寸和格式
+// FetchImageInfo 探测图片尺寸和格式。URL 中的 # 会自动转义为 %23。
 func FetchImageInfo(imgURL string) ImageInfo {
 	info := ImageInfo{URL: imgURL}
+	fetchURL := strings.ReplaceAll(imgURL, "#", "%23")
 
-	req, err := http.NewRequest(http.MethodGet, imgURL, nil)
-	if err != nil {
-		log.Printf("[探测失败] %s: %v", imgURL, err)
-		return info
-	}
-	// 只请求前 64KB，足够解析图片头部
-	req.Header.Set("Range", "bytes=0-65535")
-
-	resp, err := imageClient.Do(req)
+	resp, err := imageClient.Get(fetchURL)
 	if err != nil {
 		log.Printf("[探测失败] %s: %v", imgURL, err)
 		return info
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("[探测失败] %s: HTTP %d", imgURL, resp.StatusCode)
+		return info
+	}
 
 	cfg, format, err := image.DecodeConfig(resp.Body)
 	if err != nil {

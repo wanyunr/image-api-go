@@ -18,13 +18,11 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Host string `yaml:"host"`
-	Port int    `yaml:"port"`
-	// BasePath URL 路径前缀。部署在反向代理子目录（如 /api）下时，
-	// 设为此前缀值即可正常响应，无需反代做路径 rewrite。
-	// 默认为空（等同于 /），表示无前缀。
-	// 示例：BasePath="/api" → 路由注册为 /api/、/api/health、/api/admin/reload
-	BasePath string `yaml:"base_path"`
+	Host         string `yaml:"host"`
+	Port         int    `yaml:"port"`
+	CacheDir     string `yaml:"cache_dir"`
+	MetadataMode string `yaml:"metadata_mode"`
+	BasePath     string `yaml:"base_path"`
 }
 
 type URLsConfig struct {
@@ -33,8 +31,9 @@ type URLsConfig struct {
 }
 
 type AuthConfig struct {
-	Enabled bool     `yaml:"enabled"`
-	Tokens  []string `yaml:"tokens"`
+	Enabled    bool     `yaml:"enabled"`
+	Tokens     []string `yaml:"tokens"`
+	AdminToken string   `yaml:"admin_token"`
 }
 
 type RateLimitConfig struct {
@@ -83,8 +82,10 @@ func LoadConfig(path string) (*Config, bool, error) {
 func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
-			Host: "0.0.0.0",
-			Port: 28085,
+			Host:         "0.0.0.0",
+			Port:         28085,
+			CacheDir:     "cache",
+			MetadataMode: "on_request",
 		},
 		URLs: URLsConfig{
 			Portrait:  "urls/portrait.txt",
@@ -125,7 +126,16 @@ func (c *Config) Validate() error {
 	if c.Server.Port <= 0 || c.Server.Port > 65535 {
 		return fmt.Errorf("server.port 必须在 1-65535 之间，当前值: %d", c.Server.Port)
 	}
-	if c.Server.BasePath != "" {
+	if c.Server.MetadataMode == "" {
+		c.Server.MetadataMode = "on_request"
+	}
+	if c.Server.MetadataMode != "prefetch" && c.Server.MetadataMode != "on_request" {
+		return fmt.Errorf("server.metadata_mode 必须是 prefetch 或 on_request，当前值: %q", c.Server.MetadataMode)
+	}
+	if c.Server.MetadataMode == "prefetch" && c.Server.CacheDir == "" {
+		return fmt.Errorf("prefetch 模式下 server.cache_dir 不能为空")
+	}
+	if c.Server.BasePath != "" && c.Server.BasePath != "/" {
 		if !strings.HasPrefix(c.Server.BasePath, "/") {
 			return fmt.Errorf("server.base_path 必须以 / 开头，当前值: %q", c.Server.BasePath)
 		}

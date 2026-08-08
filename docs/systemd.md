@@ -236,6 +236,12 @@ ls -l /etc/systemd/system/multi-user.target.wants/image-api.service
 
 最小配置足以运行。生产环境可按需追加以下选项到 `[Service]` 段：
 
+#### 0. metadata 获取模式
+
+`config.yaml` 中 `server.metadata_mode` 可选：
+- `on_request`（默认）：请求 `format=json` 时实时探测，无缓存零启动时间
+- `prefetch`：启动时从缓存快速入池，后台异步补抓全量 metadata
+
 #### 1. 使用非 root 用户运行
 
 ```bash

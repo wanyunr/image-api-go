@@ -64,7 +64,7 @@ docker compose exec image-api sh
 - **端口**：修改 `docker/.env` 中的 `APP_PORT`（默认 `28085`），容器内端口固定为 `28085`
 - **时区**：修改 `docker/.env` 中的 `TZ`（默认 `Asia/Shanghai`）
 - **配置与 URL 列表**：直接编辑项目根目录的 `config.yaml` / `urls/*.txt`，已通过数据卷挂载到容器，修改后 `docker compose restart` 生效
-- **热重载 URL 池**（无需重启）：`curl -X POST http://127.0.0.1:28085/admin/reload`
+- **metadata 模式**：`metadata_mode` 默认 `on_request`（请求 JSON 实时探测）；设为 `prefetch` 启用异步预取+缓存
 - **注入版本号**：在 `docker/Dockerfile` 构建命令中追加 `-X main.version=v1.0.0`，例如：
   ```dockerfile
   RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=v1.0.0" -o image-api .

@@ -104,6 +104,8 @@ server:
   host: "0.0.0.0"
   port: 28085
   # base_path: "/"              # 反代子目录前缀（可选，默认空=无前缀）
+  cache_dir: "cache"            # prefetch 模式下的 metadata 缓存目录
+  metadata_mode: "on_request"   # on_request（默认）：请求 JSON 时实时探测；prefetch：启动异步预取并缓存
 
 urls:
   portrait: "urls/portrait.txt"    # 竖屏 URL 列表
@@ -256,6 +258,8 @@ curl "http://localhost:28085/?token=your-secret-token"
 ## 性能设计
 
 - URL 列表启动时一次性加载到内存，请求时不读磁盘
+- **`on_request` 模式（默认）**：零启动时间，`format=json` 时实时探测图片尺寸
+- **`prefetch` 模式**：缓存命中秒启动，后台异步补抓全量 metadata；适用于大量 URL 需要快速 `format=json` 响应的场景
 - 图片不经过本服务器，仅返回 302 重定向
 - 仅依赖 `gopkg.in/yaml.v3` 与官方扩展库 `golang.org/x/image`（WebP 解码），无第三方框架
 

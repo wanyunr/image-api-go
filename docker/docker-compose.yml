@@ -15,4 +15,5 @@ services:
     volumes:
       - ../config.yaml:/app/config.yaml
       - ../urls:/app/urls
+      - ../cache:/app/cache
     restart: unless-stopped

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log"
@@ -10,7 +11,6 @@ import (
 	"time"
 )
 
-// ImageJSONResponse is returned when format=json.
 type ImageJSONResponse struct {
 	URL         string `json:"url"`
 	Orientation string `json:"orientation"`
@@ -20,7 +20,6 @@ type ImageJSONResponse struct {
 	Filename    string `json:"filename"`
 }
 
-// HealthResponse is returned by /health.
 type HealthResponse struct {
 	Status             string   `json:"status"`
 	Uptime             string   `json:"uptime"`
@@ -28,18 +27,20 @@ type HealthResponse struct {
 	Pool               PoolInfo `json:"pool"`
 }
 
-// PoolInfo contains URL pool counts.
 type PoolInfo struct {
 	Portrait  int `json:"portrait"`
 	Landscape int `json:"landscape"`
 	Total     int `json:"total"`
+	Pending   int `json:"pending"`
+	Dead      int `json:"dead"`
 }
 
-// ReloadResponse is returned by POST /admin/reload.
 type ReloadResponse struct {
 	Status    string `json:"status"`
 	Portrait  int    `json:"portrait"`
 	Landscape int    `json:"landscape"`
+	Pending   int    `json:"pending"`
+	Dead      int    `json:"dead"`
 }
 
 type Handler struct {
@@ -64,28 +65,26 @@ func (h *Handler) ServeImage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
 	}
 
-	ip := getClientIP(r) // 仅用于日志展示；限流为全局额度，不依赖 IP
+	ip := getClientIP(r)
 	ua := r.UserAgent()
 	h.totalReqs.Add(1)
-	log.Printf("[request] IP=%s UA=%s Query=%s", ip, ua, sanitizeQuery(r.URL.RawQuery))
+	logStructured("request", map[string]any{"ip": ip, "ua": ua, "query": sanitizeQuery(r.URL.RawQuery)})
 
 	if !h.checkReferer(r) {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
-
 	if !h.checkAuth(r) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-
 	if !h.limiter.Allow() {
+		logStructured("rate_limit_hit", map[string]any{"ip": ip, "ua": ua, "query": sanitizeQuery(r.URL.RawQuery)})
 		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
 		return
 	}
@@ -110,51 +109,55 @@ func (h *Handler) ServeImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	imgURL, err := h.pool.Random(orientation)
+	img, err := h.pool.Random(orientation)
 	if err != nil {
+		logStructured("error", map[string]any{"type": "pool_error", "err": err.Error(), "orientation": orientation})
 		if errors.Is(err, ErrPoolEmpty) {
 			http.Error(w, "Service Unavailable: URL pool is empty", http.StatusServiceUnavailable)
 			return
 		}
-		log.Printf("[error] %v", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 
 	switch format {
 	case "json":
-		info := FetchImageInfo(imgURL)
+		info := img
+		if h.cfg.Server.MetadataMode == "on_request" || info.Width == 0 {
+			info = FetchImageInfo(img.URL)
+		}
 		resp := ImageJSONResponse{
 			URL:         info.URL,
 			Orientation: orientation,
 			Width:       info.Width,
 			Height:      info.Height,
 			Format:      info.Format,
-			Filename:    filenameFromURL(imgURL),
+			Filename:    filenameFromURL(info.URL),
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		json.NewEncoder(w).Encode(resp)
 	case "text":
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Write([]byte(imgURL))
+		w.Write([]byte(img.URL))
 	default:
-		http.Redirect(w, r, imgURL, http.StatusFound)
+		http.Redirect(w, r, img.URL, http.StatusFound)
+		logStructured("redirect", map[string]any{"ip": ip, "ua": ua, "orientation": orientation, "url": img.URL})
 	}
 }
 
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	portrait, landscape := h.pool.Count()
-	uptime := time.Since(h.startTime)
-
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(HealthResponse{
 		Status:             "ok",
-		Uptime:             formatDuration(uptime),
+		Uptime:             formatDuration(time.Since(h.startTime)),
 		RequestsSinceStart: h.totalReqs.Load(),
 		Pool: PoolInfo{
 			Portrait:  portrait,
 			Landscape: landscape,
 			Total:     portrait + landscape,
+			Pending:   h.pool.Pending(),
+			Dead:      h.pool.Dead(),
 		},
 	})
 }
@@ -164,64 +167,99 @@ func (h *Handler) Reload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
-	if !h.checkAuth(r) {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-
-	_, err := h.pool.Load(h.cfg.URLs.Portrait, h.cfg.URLs.Landscape)
+	stats, err := h.pool.Load(h.cfg.URLs.Portrait, h.cfg.URLs.Landscape, h.cfg.Server.CacheDir)
 	if err != nil {
 		log.Printf("[reload failed] %v", err)
 		http.Error(w, "Reload Failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	portrait, landscape := h.pool.Count()
-	log.Printf("[reload success] portrait=%d landscape=%d", portrait, landscape)
+	go h.pool.RetryPending()
+	logStructured("reload", map[string]any{"portrait": stats.Portrait, "landscape": stats.Landscape, "pending": stats.Pending, "dead": stats.Dead})
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(ReloadResponse{
 		Status:    "reloaded",
-		Portrait:  portrait,
-		Landscape: landscape,
+		Portrait:  stats.Portrait,
+		Landscape: stats.Landscape,
+		Pending:   stats.Pending,
+		Dead:      stats.Dead,
 	})
+}
+
+func (h *Handler) ClearDead(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	h.pool.ClearDead()
+	logStructured("clear_dead", map[string]any{})
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(map[string]string{"status": "dead links cleared"})
 }
 
 func (h *Handler) checkAuth(r *http.Request) bool {
 	if !h.cfg.Auth.Enabled {
 		return true
 	}
-
-	token := r.URL.Query().Get("token")
-	if token == "" {
-		token = r.Header.Get("Authorization")
-		token = strings.TrimPrefix(token, "Bearer ")
-	}
-
+	token := extractToken(r)
 	for _, t := range h.cfg.Auth.Tokens {
-		if token == t {
+		if tokenMatches(token, t) {
 			return true
 		}
 	}
 	return false
 }
 
+func (h *Handler) checkAdminAuth(r *http.Request) bool {
+	token := extractToken(r)
+	if h.cfg.Auth.AdminToken != "" {
+		return tokenMatches(token, h.cfg.Auth.AdminToken)
+	}
+	if h.cfg.Auth.Enabled {
+		for _, t := range h.cfg.Auth.Tokens {
+			if tokenMatches(token, t) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (h *Handler) AdminAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !h.checkAdminAuth(r) {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func extractToken(r *http.Request) string {
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		token = r.Header.Get("Authorization")
+		token = strings.TrimPrefix(token, "Bearer ")
+	}
+	return token
+}
+
+func tokenMatches(got, want string) bool {
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
 func (h *Handler) checkReferer(r *http.Request) bool {
 	if !h.cfg.Referer.Enabled {
 		return true
 	}
-
 	referer := r.Header.Get("Referer")
 	if referer == "" {
 		return h.cfg.Referer.AllowEmpty
 	}
-
 	refererHost := extractHost(referer)
 	if refererHost == "" {
 		return h.cfg.Referer.AllowEmpty
 	}
-
 	for _, pattern := range h.cfg.Referer.Whitelist {
 		if matchReferer(refererHost, pattern) {
 			return true

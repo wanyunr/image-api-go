@@ -2,25 +2,31 @@
 # 复制为 config.yaml 后按需修改：cp config.yaml.example config.yaml
 
 server:
-  host: "0.0.0.0"
-  port: 28085
-  base_path: "/"
-  # 图片 API 的 URL 池文件（相对当前工作目录）
+  host: "0.0.0.0"            # 监听地址
+  port: 28085                # 监听端口
+  base_path: "/"             # 反代子目录前缀（/ 表示无前缀）
+  cache_dir: "cache"         # metadata 缓存目录（仅 prefetch 模式使用）
+  metadata_mode: "on_request"  # on_request: 实时探测 | prefetch: 异步预取+缓存
+
 urls:
-  portrait: "urls/portrait.txt"
-  landscape: "urls/landscape.txt"
+  portrait: "urls/portrait.txt"    # 竖屏 URL 列表
+  landscape: "urls/landscape.txt"  # 横屏 URL 列表
+
 auth:
-  enabled: false
+  enabled: false             # Token 鉴权开关
   tokens:
-    - "your_secret_token"   # 改成你自己的 token
+    - "your_secret_token"    # 图片 API 的 Token
+  admin_token: ""            # 管理端点专用 Token（openssl rand -hex 16）
+
 rate_limit:
-  enabled: false
-  per_minute: 30
-  per_hour: 120
-  per_day: 300
+  enabled: false             # 全局限流开关
+  per_minute: 30             # 每分钟上限
+  per_hour: 120              # 每小时上限
+  per_day: 300               # 每天上限
+
 referer:
-  enabled: false
-  allow_empty: true
+  enabled: false             # 防盗链开关
+  allow_empty: true          # 是否允许空 Referer
   whitelist:
-    - "example.com"
-    - "*.example.com"
+    - "example.com"          # 精确匹配
+    - "*.example.com"        # 通配符匹配子域名
