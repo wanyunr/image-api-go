@@ -5,6 +5,7 @@ import (
 	"image-api/app"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -12,6 +13,45 @@ import (
 
 // version 由 ldflags 在构建时注入
 var version = "dev"
+
+func newBasePathHandler(basePath string, target http.Handler) http.Handler {
+	basePath = strings.TrimRight(basePath, "/")
+	if basePath == "" {
+		return target
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if path == basePath {
+			req := r.Clone(r.Context())
+			req.URL = cloneURL(r.URL)
+			req.URL.Path = "/"
+			target.ServeHTTP(w, req)
+			return
+		}
+
+		if strings.HasPrefix(path, basePath+"/") {
+			req := r.Clone(r.Context())
+			req.URL = cloneURL(r.URL)
+			req.URL.Path = strings.TrimPrefix(path, basePath)
+			if req.URL.Path == "" {
+				req.URL.Path = "/"
+			}
+			target.ServeHTTP(w, req)
+			return
+		}
+
+		http.NotFound(w, r)
+	})
+}
+
+func cloneURL(u *url.URL) *url.URL {
+	if u == nil {
+		return nil
+	}
+	cloned := *u
+	return &cloned
+}
 
 func main() {
 
@@ -55,22 +95,21 @@ func main() {
 	handler := app.NewHandler(cfg, pool, limiter)
 
 	// 路由（支持 server.base_path 前缀，默认空=无前缀）
-	mux := http.NewServeMux()
-	target := mux
-	if bp := strings.TrimRight(cfg.Server.BasePath, "/"); bp != "" {
-		sub := http.NewServeMux()
-		mux.Handle(bp+"/", http.StripPrefix(bp, sub))
-		target = sub
-	}
+	target := http.NewServeMux()
 	target.HandleFunc("/", handler.ServeImage)
 	target.HandleFunc("/health", handler.Health)
 	target.HandleFunc("/admin/reload", handler.Reload)
+
+	rootHandler := http.Handler(target)
+	if bp := strings.TrimRight(cfg.Server.BasePath, "/"); bp != "" {
+		rootHandler = newBasePathHandler(bp, target)
+	}
 
 	// 启动 HTTP Server（显式设置超时，防 Slowloris 慢连接攻击）
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           rootHandler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      20 * time.Second,
