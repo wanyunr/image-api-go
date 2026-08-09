@@ -9,30 +9,23 @@
 ```
 image-api/
 ├── src/                  # Go 工程（模块根目录）
-│   ├── main.go           # 入口：配置加载、组件初始化、路由注册、启动服务
-│   ├── go.mod / go.sum   # 模块定义与依赖锁定
-│   └── app/              # 业务逻辑包（import "image-api/app"）
-│       ├── config.go     # 配置结构体定义、加载与校验
-│       ├── handler.go    # HTTP 处理器（ServeImage / Health / Reload / 鉴权 / 防盗链）
-│       ├── pool.go       # URL 池管理（文件加载、随机选取、热重载）
-│       ├── imageinfo.go  # 图片元数据探测（Range 请求 + DecodeConfig，支持 WebP）
-│       ├── ratelimit.go  # 全局限流（所有请求共享分/时/天三级额度）
-│       └── util.go       # 通用工具函数（IP提取、UA检测、Referer匹配、URL解析、时间格式化）
+│   ├── main.go           # 入口
+│   ├── go.mod / go.sum
+│   └── app/              # 业务逻辑包
+│       ├── config.go     # 配置加载与校验
+│       ├── handler.go    # HTTP 处理器
+│       ├── pool.go       # URL 池管理
+│       ├── recent.go     # 最近访问追溯
+│       ├── imageinfo.go  # 图片元数据探测（支持 WebP）
+│       ├── cache.go      # metadata 缓存持久化
+│       ├── ratelimit.go  # 全局限流
+│       └── util.go       # 通用工具
 ├── config.yaml           # 配置文件
 ├── docs/                 # 项目文档
-│   ├── built.md          # 构建发布教程（GitHub Actions）
-│   ├── systemd.md        # Linux systemd 服务部署教程
-│   └── docker.md         # Docker Compose 部署教程
 ├── docker/               # 容器化部署
-│   ├── Dockerfile        # 镜像构建
-│   ├── docker-compose.yml # 编排
-│   └── .env.example      # 环境变量示例
-├── .dockerignore         # 构建上下文排除（需位于项目根）
-├── README.md
-├── urls/
-│   ├── portrait.txt
-│   └── landscape.txt
-├── .github/workflows/    # CI 配置
+│   ├── Dockerfile
+│   ├── docker-compose.yml
+│   └── .env.example
 └── LICENSE
 ```
 
@@ -95,7 +88,7 @@ go test -race ./...  # 竞态检测（需要 CGO_ENABLED=1；Windows 需安装 g
 ./image-api --version            # 查看版本（-v 亦可）
 ```
 
-**热重载：** 修改 `urls/*.txt` 后无需重启，调用 `curl -X POST http://127.0.0.1:28085/admin/reload` 即可刷新 URL 池。
+**热重载：** 修改 `urls/*.txt` 后无需重启，调用 `curl http://127.0.0.1:28085/admin/reload` 即可刷新 URL 池。
 
 ## 配置说明
 
@@ -105,7 +98,8 @@ server:
   port: 28085
   # base_path: "/"              # 反代子目录前缀（可选，默认空=无前缀）
   cache_dir: "cache"            # prefetch 模式下的 metadata 缓存目录
-  metadata_mode: "on_request"   # on_request（默认）：请求 JSON 时实时探测；prefetch：启动异步预取并缓存
+  metadata_mode: "on_request"   # on_request（默认）：实时探测；prefetch：异步预取+缓存
+  # recent_buffer_size: 50      # 最近访问追溯条数（默认 50，GET /admin/recent）
 
 urls:
   portrait: "urls/portrait.txt"    # 竖屏 URL 列表
@@ -152,7 +146,7 @@ https://cdn.example.com/img/002.jpg
 GET /
 ```
 
-> 若配置了 `base_path`（如 `/api`），端点前缀相应变化：`/api/`、`/api/health`、`POST /api/admin/reload`。
+> 若配置了 `base_path`（如 `/api`），端点前缀相应变化：`/api/`、`/api/health`、`/api/admin/reload`。
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
@@ -175,11 +169,13 @@ GET /
 **示例：**
 
 ```bash
-# 浏览器访问 → 直接看到图片
-http://localhost:28085/
+# 302 跳转
+curl -i "http://localhost:28085/"
+# HTTP/1.1 302 Found
+# Location: https://cdn.example.com/p/001.jpg
 
 # 强制竖屏
-http://localhost:28085/?orientation=portrait
+curl -i "http://localhost:28085/?orientation=portrait"
 
 # JSON 格式
 curl "http://localhost:28085/?format=json"
@@ -188,6 +184,10 @@ curl "http://localhost:28085/?format=json"
 # 纯文本
 curl "http://localhost:28085/?format=text"
 # https://cdn.example.com/p/001.jpg
+
+# 带 Token
+curl "http://localhost:28085/?token=your-secret-token&format=json"
+# {"url":"...","orientation":"portrait","width":1080,"height":1920,"format":"webp","filename":"001.webp"}
 ```
 
 ### 健康检查
@@ -196,21 +196,57 @@ curl "http://localhost:28085/?format=text"
 GET /health
 ```
 
-```json
-{"status":"ok","uptime":"2s","requests_since_start":0,"pool":{"portrait":3,"landscape":3,"total":6}}
+```bash
+curl "http://localhost:28085/health"
+# {"status":"ok","uptime":"2s","requests_since_start":0,"pool":{"portrait":3,"landscape":3,"total":6,"pending":0,"dead":0}}
 ```
 
 ### 热重载 URL 列表
 
 ```
-POST /admin/reload
+GET /admin/reload
 ```
 
-修改 `portrait.txt` / `landscape.txt` 后无需重启，调用此接口即可刷新内存中的 URL 池（仅接受 POST）。
+修改 `portrait.txt` / `landscape.txt` 后无需重启，调用此接口即可刷新内存中的 URL 池。
 
-```json
-{"status":"reloaded","portrait":5,"landscape":8}
+```bash
+curl -H "Authorization: Bearer your-admin-token" "http://localhost:28085/admin/reload"
+# {"status":"reloaded","portrait":5,"landscape":8,"pending":2,"dead":0}
 ```
+
+### 最近访问追溯
+
+```
+GET /admin/recent
+```
+
+查看最近返回的图片记录（按时间倒序），避免喜欢的图找不到。
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `limit` | 返回条数 | 全部 |
+
+```bash
+curl -H "Authorization: Bearer your-admin-token" "http://localhost:28085/admin/recent?limit=20"
+# {"total":34,"items":[{"url":"...","orientation":"portrait","format":"redirect","at":"..."},...]}
+```
+
+缓冲条数由 `server.recent_buffer_size` 配置（默认 50），仅内存保留，重启后清空。
+
+### 清空死链
+
+```
+POST /admin/clear-dead
+```
+
+prefetch 模式下连续失败 3 次的 URL 不再重试，此接口清空后下次 reload 重新尝试。
+
+```bash
+curl -X POST -H "Authorization: Bearer your-admin-token" "http://localhost:28085/admin/clear-dead"
+# {"status":"dead links cleared"}
+```
+
+> `/admin/*` 始终要求 Token（`auth.admin_token` 优先，否则回退 `auth.tokens`）。
 
 ## 鉴权
 

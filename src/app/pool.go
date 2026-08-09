@@ -12,13 +12,15 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 var ErrPoolEmpty = errors.New("URL pool is empty")
 
 const (
-	metadataFetchConcurrency = 8
+	metadataFetchConcurrency = 1
+	metadataFetchDelay       = 200 * time.Millisecond
 	metadataWorkerInterval   = 30 * time.Second
 	metadataMaxAttempts      = 3
 )
@@ -29,15 +31,28 @@ type pendingItem struct {
 	attempts    int
 }
 
+type metaUpdate struct {
+	info        ImageInfo
+	orientation string
+}
+
+type PoolSnapshot struct {
+	Portrait  []ImageInfo
+	Landscape []ImageInfo
+	Retry     []pendingItem
+	Dead      []DeadItem
+}
+
+// URLPool 通过 atomic.Pointer 提供无锁读取。
+// 热路径（Random/Count）使用 atomic.Load，低开销。
+// 变更操作（Load/retryPending/ClearDead）通过 mu 串行化，保证原子替换。
 type URLPool struct {
-	mu           sync.RWMutex
-	portrait     []ImageInfo
-	landscape    []ImageInfo
-	retry        []pendingItem
-	dead         []DeadItem
+	current      atomic.Pointer[PoolSnapshot]
+	mu           sync.Mutex
 	cacheDir     string
 	metadataMode string
 	rng          *rand.Rand
+	rngMu        sync.Mutex
 }
 
 type LoadStats struct {
@@ -49,7 +64,9 @@ type LoadStats struct {
 }
 
 func NewURLPool() *URLPool {
-	return &URLPool{rng: newRandGenerator(), metadataMode: "prefetch"}
+	p := &URLPool{rng: newRandGenerator(), metadataMode: "prefetch"}
+	p.current.Store(&PoolSnapshot{})
+	return p
 }
 
 func (p *URLPool) SetMetadataMode(mode string) {
@@ -70,7 +87,8 @@ func newRandGenerator() *rand.Rand {
 	return rand.New(rand.NewSource(seed))
 }
 
-// Load 加载 URL 列表。缓存命中带 metadata 入池，全部进 retry 后台补抓。
+// Load 完整构建新 Snapshot 后原子替换。
+// 先读文件 → 校验 → 构建 pool → 构建 metadata → 一切就绪 → 原子 swap。
 func (p *URLPool) Load(portraitFile, landscapeFile, cacheDir string) (LoadStats, error) {
 	portraitURLs, createdPortrait, err := loadOrCreate(portraitFile, "# portrait URL list\n# Add one image URL per line\n", "竖屏")
 	if err != nil {
@@ -85,8 +103,20 @@ func (p *URLPool) Load(portraitFile, landscapeFile, cacheDir string) (LoadStats,
 	landscapeURLs = dedupe(landscapeURLs)
 
 	p.cacheDir = cacheDir
+
 	if p.metadataMode == "on_request" {
-		return p.loadOnRequest(portraitURLs, landscapeURLs, createdPortrait || createdLandscape)
+		snapshot := &PoolSnapshot{
+			Portrait:  makeInfos(portraitURLs),
+			Landscape: makeInfos(landscapeURLs),
+		}
+		p.mu.Lock()
+		p.current.Store(snapshot)
+		p.mu.Unlock()
+		return LoadStats{
+			CreatedFiles: createdPortrait || createdLandscape,
+			Portrait:     len(portraitURLs),
+			Landscape:    len(landscapeURLs),
+		}, nil
 	}
 
 	cache, _ := LoadCache(cacheDir)
@@ -102,14 +132,32 @@ func (p *URLPool) Load(portraitFile, landscapeFile, cacheDir string) (LoadStats,
 		cacheL[info.URL] = info
 	}
 
-	portrait, retryP, deadP := p.buildPoolWithCache(portraitURLs, cacheP, "portrait")
-	landscape, retryL, deadL := p.buildPoolWithCache(landscapeURLs, cacheL, "landscape")
+	portrait, retryP := buildWithCache(portraitURLs, cacheP, "portrait")
+	landscape, retryL := buildWithCache(landscapeURLs, cacheL, "landscape")
 
+	urlSet := make(map[string]bool, len(portraitURLs)+len(landscapeURLs))
+	for _, u := range portraitURLs {
+		urlSet[u] = true
+	}
+	for _, u := range landscapeURLs {
+		urlSet[u] = true
+	}
+	var dead []DeadItem
+	for _, d := range cache.Dead {
+		if urlSet[d.URL] {
+			dead = append(dead, d)
+		}
+	}
+
+	// 所有数据就绪，一次原子替换
+	snapshot := &PoolSnapshot{
+		Portrait:  portrait,
+		Landscape: landscape,
+		Retry:     append(retryP, retryL...),
+		Dead:      dead,
+	}
 	p.mu.Lock()
-	p.portrait = portrait
-	p.landscape = landscape
-	p.retry = append(retryP, retryL...)
-	p.dead = append(deadP, deadL...)
+	p.current.Store(snapshot)
 	p.mu.Unlock()
 
 	if err := p.saveCache(); err != nil {
@@ -121,7 +169,7 @@ func (p *URLPool) Load(portraitFile, landscapeFile, cacheDir string) (LoadStats,
 		Portrait:     len(portrait),
 		Landscape:    len(landscape),
 		Pending:      len(retryP) + len(retryL),
-		Dead:         len(deadP) + len(deadL),
+		Dead:         len(dead),
 	}, nil
 }
 
@@ -129,45 +177,6 @@ func (p *URLPool) RetryPending() {
 	p.retryPending()
 }
 
-func (p *URLPool) buildPoolWithCache(urls []string, cacheMap map[string]ImageInfo, orientation string) ([]ImageInfo, []pendingItem, []DeadItem) {
-	pool := make([]ImageInfo, 0, len(urls))
-	var retry []pendingItem
-	for _, u := range urls {
-		if info, ok := cacheMap[u]; ok {
-			pool = append(pool, info)
-		} else {
-			pool = append(pool, ImageInfo{URL: u})
-		}
-		retry = append(retry, pendingItem{url: u, orientation: orientation})
-	}
-	return pool, retry, nil
-}
-
-func (p *URLPool) loadOnRequest(portraitURLs, landscapeURLs []string, createdFiles bool) (LoadStats, error) {
-	portrait := make([]ImageInfo, len(portraitURLs))
-	for i, u := range portraitURLs {
-		portrait[i] = ImageInfo{URL: u}
-	}
-	landscape := make([]ImageInfo, len(landscapeURLs))
-	for i, u := range landscapeURLs {
-		landscape[i] = ImageInfo{URL: u}
-	}
-
-	p.mu.Lock()
-	p.portrait = portrait
-	p.landscape = landscape
-	p.retry = nil
-	p.dead = nil
-	p.mu.Unlock()
-
-	return LoadStats{
-		CreatedFiles: createdFiles,
-		Portrait:     len(portrait),
-		Landscape:    len(landscape),
-	}, nil
-}
-
-// MetadataWorker 后台周期补抓 metadata 缺失的 URL。
 func (p *URLPool) MetadataWorker(done <-chan struct{}) {
 	ticker := time.NewTicker(metadataWorkerInterval)
 	defer ticker.Stop()
@@ -183,9 +192,16 @@ func (p *URLPool) MetadataWorker(done <-chan struct{}) {
 
 func (p *URLPool) retryPending() {
 	p.mu.Lock()
-	items := p.retry
-	p.retry = nil
+	snapshot := p.current.Load()
+	items := snapshot.Retry
+	// 清空当前 retry，避免重入重复抓取
+	p.current.Store(&PoolSnapshot{
+		Portrait:  snapshot.Portrait,
+		Landscape: snapshot.Landscape,
+		Dead:      snapshot.Dead,
+	})
 	p.mu.Unlock()
+
 	if len(items) == 0 {
 		return
 	}
@@ -193,11 +209,7 @@ func (p *URLPool) retryPending() {
 	sem := make(chan struct{}, metadataFetchConcurrency)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	type readyItem struct {
-		info        ImageInfo
-		orientation string
-	}
-	var added []readyItem
+	var added []metaUpdate
 	var still []pendingItem
 	var newlyDead []DeadItem
 
@@ -207,20 +219,19 @@ func (p *URLPool) retryPending() {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
+			time.Sleep(metadataFetchDelay)
 
 			info := FetchImageInfo(it.url)
 			mu.Lock()
 			defer mu.Unlock()
 			if info.Width > 0 && info.Height > 0 {
-				added = append(added, readyItem{info: info, orientation: it.orientation})
+				added = append(added, metaUpdate{info: info, orientation: it.orientation})
 				return
 			}
 			it.attempts++
 			if it.attempts >= metadataMaxAttempts {
 				newlyDead = append(newlyDead, DeadItem{
-					URL:         it.url,
-					Orientation: it.orientation,
-					Attempts:    it.attempts,
+					URL: it.url, Orientation: it.orientation, Attempts: it.attempts,
 				})
 			} else {
 				still = append(still, it)
@@ -229,12 +240,23 @@ func (p *URLPool) retryPending() {
 	}
 	wg.Wait()
 
+	// 构建新 snapshot（含 Reload 期间可能新增的 retry 项）
 	p.mu.Lock()
-	for _, a := range added {
-		p.updatePoolEntry(a.info, a.orientation)
-	}
-	p.retry = append(p.retry, still...)
-	p.dead = append(p.dead, newlyDead...)
+	snapshot = p.current.Load()
+	newPortrait := applyUpdates(snapshot.Portrait, added, "portrait")
+	newLandscape := applyUpdates(snapshot.Landscape, added, "landscape")
+	newDead := make([]DeadItem, 0, len(snapshot.Dead)+len(newlyDead))
+	newDead = append(newDead, snapshot.Dead...)
+	newDead = append(newDead, newlyDead...)
+	newRetry := make([]pendingItem, 0, len(snapshot.Retry)+len(still))
+	newRetry = append(newRetry, snapshot.Retry...)
+	newRetry = append(newRetry, still...)
+	p.current.Store(&PoolSnapshot{
+		Portrait:  newPortrait,
+		Landscape: newLandscape,
+		Retry:     newRetry,
+		Dead:      newDead,
+	})
 	p.mu.Unlock()
 
 	if len(added) > 0 || len(newlyDead) > 0 {
@@ -243,31 +265,35 @@ func (p *URLPool) retryPending() {
 	}
 }
 
-func (p *URLPool) updatePoolEntry(info ImageInfo, orientation string) {
-	var pool *[]ImageInfo
-	if orientation == "portrait" {
-		pool = &p.portrait
-	} else {
-		pool = &p.landscape
-	}
-	for i := range *pool {
-		if (*pool)[i].URL == info.URL {
-			(*pool)[i] = info
-			return
+func applyUpdates(pool []ImageInfo, updates []metaUpdate, orientation string) []ImageInfo {
+	updateMap := make(map[string]ImageInfo)
+	for _, u := range updates {
+		if u.orientation == orientation {
+			updateMap[u.info.URL] = u.info
 		}
 	}
+	if len(updateMap) == 0 {
+		return pool
+	}
+	newPool := make([]ImageInfo, len(pool))
+	copy(newPool, pool)
+	for i := range newPool {
+		if info, ok := updateMap[newPool[i].URL]; ok {
+			newPool[i] = info
+		}
+	}
+	return newPool
 }
 
 func (p *URLPool) Random(orientation string) (ImageInfo, error) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+	snapshot := p.current.Load()
 
 	var pool []ImageInfo
 	switch orientation {
 	case "portrait":
-		pool = p.portrait
+		pool = snapshot.Portrait
 	case "landscape":
-		pool = p.landscape
+		pool = snapshot.Landscape
 	default:
 		return ImageInfo{}, fmt.Errorf("无效的 orientation: %s", orientation)
 	}
@@ -276,33 +302,33 @@ func (p *URLPool) Random(orientation string) (ImageInfo, error) {
 		return ImageInfo{}, fmt.Errorf("%w: %s", ErrPoolEmpty, orientation)
 	}
 
-	if p.rng == nil {
-		p.rng = newRandGenerator()
-	}
-	return pool[p.rng.Intn(len(pool))], nil
+	p.rngMu.Lock()
+	idx := p.rng.Intn(len(pool))
+	p.rngMu.Unlock()
+	return pool[idx], nil
 }
 
 func (p *URLPool) Count() (portrait, landscape int) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return len(p.portrait), len(p.landscape)
+	s := p.current.Load()
+	return len(s.Portrait), len(s.Landscape)
 }
 
 func (p *URLPool) Pending() int {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return len(p.retry)
+	return len(p.current.Load().Retry)
 }
 
 func (p *URLPool) Dead() int {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return len(p.dead)
+	return len(p.current.Load().Dead)
 }
 
 func (p *URLPool) ClearDead() {
 	p.mu.Lock()
-	p.dead = nil
+	s := p.current.Load()
+	p.current.Store(&PoolSnapshot{
+		Portrait:  s.Portrait,
+		Landscape: s.Landscape,
+		Retry:     s.Retry,
+	})
 	p.mu.Unlock()
 	_ = p.saveCache()
 }
@@ -311,14 +337,35 @@ func (p *URLPool) saveCache() error {
 	if p.metadataMode != "prefetch" || p.cacheDir == "" {
 		return nil
 	}
-	p.mu.RLock()
+	s := p.current.Load()
 	cache := &Cache{
-		Portrait:  append([]ImageInfo(nil), p.portrait...),
-		Landscape: append([]ImageInfo(nil), p.landscape...),
-		Dead:      append([]DeadItem(nil), p.dead...),
+		Portrait:  append([]ImageInfo(nil), s.Portrait...),
+		Landscape: append([]ImageInfo(nil), s.Landscape...),
+		Dead:      append([]DeadItem(nil), s.Dead...),
 	}
-	p.mu.RUnlock()
 	return SaveCache(p.cacheDir, cache)
+}
+
+func buildWithCache(urls []string, cacheMap map[string]ImageInfo, orientation string) ([]ImageInfo, []pendingItem) {
+	pool := make([]ImageInfo, 0, len(urls))
+	retry := make([]pendingItem, 0, len(urls))
+	for _, u := range urls {
+		if info, ok := cacheMap[u]; ok {
+			pool = append(pool, info)
+		} else {
+			pool = append(pool, ImageInfo{URL: u})
+		}
+		retry = append(retry, pendingItem{url: u, orientation: orientation})
+	}
+	return pool, retry
+}
+
+func makeInfos(urls []string) []ImageInfo {
+	infos := make([]ImageInfo, len(urls))
+	for i, u := range urls {
+		infos[i] = ImageInfo{URL: u}
+	}
+	return infos
 }
 
 func loadOrCreate(path, defaultContent, name string) ([]string, bool, error) {

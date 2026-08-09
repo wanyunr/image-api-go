@@ -45,7 +45,11 @@ func main() {
 	if stats.CreatedFiles {
 		log.Printf("[URL池] 默认 URL 列表已生成: %s, %s", cfg.URLs.Portrait, cfg.URLs.Landscape)
 	}
-	log.Printf("[URL池] portrait=%d landscape=%d pending=%d dead=%d", stats.Portrait, stats.Landscape, stats.Pending, stats.Dead)
+	if cfg.Server.MetadataMode == "prefetch" {
+		log.Printf("[URL池] portrait=%d landscape=%d pending=%d dead=%d", stats.Portrait, stats.Landscape, stats.Pending, stats.Dead)
+	} else {
+		log.Printf("[URL池] portrait=%d landscape=%d", stats.Portrait, stats.Landscape)
+	}
 
 	limiter := app.NewRateLimiter(cfg.RateLimit)
 	handler := app.NewHandler(cfg, pool, limiter)
@@ -62,6 +66,7 @@ func main() {
 	adminMux := http.NewServeMux()
 	adminMux.HandleFunc("/admin/reload", handler.Reload)
 	adminMux.HandleFunc("/admin/clear-dead", handler.ClearDead)
+	adminMux.HandleFunc("/admin/recent", handler.Recent)
 	target.Handle("/admin/", handler.AdminAuth(adminMux))
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)

@@ -60,7 +60,7 @@ Client → Go HTTP API → 302 → External CDN/OSS
 
 - **限流**：全局计数器（分/时/天三窗口），不按 IP 分桶
 - **客户端 IP**：仅用于日志展示，不参与限流
-- **热重载**：`POST /admin/reload` 刷新内存 URL 池
+- **热重载**：`GET /admin/reload` 刷新内存 URL 池
 - **优雅关闭**：监听 SIGINT/SIGTERM，10s 超时关闭
 - **HTTP 超时**：ReadHeader 5s / Read 15s / Write 20s / Idle 60s
 
@@ -72,6 +72,22 @@ Client → Go HTTP API → 302 → External CDN/OSS
 - 尽量少子文件夹，业务逻辑统一在 `src/app/`
 - 构建用 `CGO_ENABLED=0` 纯静态
 - 新增代码**不写大段注释**，需要说明处加一个简短注释
+
+**结构化日志命名：**
+
+日志统一通过 `logStructured(event, fields)` 输出 JSON 行到 stdout，各 event 类型用到的字段：
+
+| event | 字段 | 触发时机 |
+|-------|------|---------|
+| `request` | `ip`, `ua`, `query` | 每次 `GET /` |
+| `redirect` | `ip`, `ua`, `orientation`, `url` | 302 重定向 |
+| `reload` | `portrait`, `landscape`, `pending`, `dead` | `GET /admin/reload` |
+| `clear_dead` | _(无)_ | `POST /admin/clear-dead` |
+| `metadata_retry` | `added`, `dead`, `remaining` | 后台补抓有变化 |
+| `rate_limit_hit` | `ip`, `ua`, `query` | 触发限流 |
+| `error` | `type`, `err`, `orientation` | 异常 |
+
+通用字段：每条日志自动附带 `event`（事件名）、`ts`（UTC RFC3339 时间戳）。
 
 ## 6. 改善原则
 

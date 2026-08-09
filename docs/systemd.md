@@ -133,7 +133,7 @@ systemctl is-enabled image-api
 systemctl is-active image-api
 ```
 
-> 提示：修改 `urls/*.txt` 后刷新 URL 池，可直接 `curl -X POST http://127.0.0.1:28085/admin/reload`（无需重启服务）；或简单地 `systemctl restart image-api`。
+> 提示：修改 `urls/*.txt` 后刷新 URL 池，可直接 `curl http://127.0.0.1:28085/admin/reload`（无需重启服务）；或简单地 `systemctl restart image-api`。
 
 ### 五、服务日志查看
 
@@ -277,7 +277,7 @@ ReadWritePaths=/opt/image-api
 
 ```ini
 [Service]
-ExecReload=/usr/bin/curl -fsS -X POST http://127.0.0.1:28085/admin/reload
+ExecReload=/usr/bin/curl -fsS http://127.0.0.1:28085/admin/reload
 ```
 
 配置后即可用 `sudo systemctl reload image-api` 刷新 URL 池（不中断服务）。若开启了鉴权（`auth.enabled: true`），需补充 `-H "Authorization: Bearer <token>"`。

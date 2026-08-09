@@ -18,11 +18,12 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Host         string `yaml:"host"`
-	Port         int    `yaml:"port"`
-	CacheDir     string `yaml:"cache_dir"`
-	MetadataMode string `yaml:"metadata_mode"`
-	BasePath     string `yaml:"base_path"`
+	Host             string `yaml:"host"`
+	Port             int    `yaml:"port"`
+	CacheDir         string `yaml:"cache_dir"`
+	MetadataMode     string `yaml:"metadata_mode"`
+	BasePath         string `yaml:"base_path"`
+	RecentBufferSize int    `yaml:"recent_buffer_size,omitempty"`
 }
 
 type URLsConfig struct {
