@@ -6,7 +6,7 @@ server:
   port: 28085                # 监听端口
   base_path: "/"             # 反代子目录前缀（/ 表示无前缀）
   cache_dir: "cache"         # metadata 缓存目录（仅 prefetch 模式使用）
-  metadata_mode: "on_request"  # on_request: 实时探测 | prefetch: 异步预取+缓存
+  metadata_mode: "on_request"  # on_request: 实时探测（默认）| prefetch: 异步预取+缓存
   recent_buffer_size: 50     # 最近访问保留条数（GET /admin/recent），默认 50
 
 urls:
@@ -17,7 +17,7 @@ auth:
   enabled: false             # Token 鉴权开关
   tokens:
     - "your_secret_token"    # 图片 API 的 Token
-  admin_token: ""            # 管理端点专用 Token（openssl rand -hex 16）
+  admin_token: ""            # 管理端点专用 Token；设置后 /admin/* 会优先使用它
 
 rate_limit:
   enabled: false             # 全局限流开关

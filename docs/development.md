@@ -1,103 +1,91 @@
-# 开发准则
+# 开发指南
 
-所有贡献者必须遵守。准则目的是保持项目核心定位不变。
+## 目标与约束
 
-## 1. 核心定位（不可改变）
+本项目的开发应始终遵循以下原则：
 
-| 原则 | 说明 |
-|------|------|
-| Go 标准库优先 | 仅用 `net/http`、`sync`、`crypto/rand` 等标准库；外部依赖仅限 YAML 解析、图片解码 |
-| 轻量 | 单二进制部署，无外部服务依赖 |
-| 无数据库 | URL 池常驻内存，不引入任何持久化存储 |
-| 图片本体不经过 API | 服务仅返回 302，图片流量直达 CDN/OSS |
-| 简单直接 | 避免过度设计，安全与性能方案选最简实现 |
+- 以 Go 标准库为主，避免引入重型框架
+- 保持单二进制、无数据库、零外部依赖服务的定位
+- 图片本体不经过 API 服务，服务只负责选择和返回地址
+- 代码实现尽量简单、直接、可维护
 
-## 2. 职责边界
+## 开发环境
 
-**API 只负责：**
+### 前置要求
 
-| 职责 | 说明 |
-|------|------|
-| 选择图片 | 内存 URL 池随机选取，支持 portrait / landscape |
-| 鉴权 | Token 校验（Header / Query） |
-| 限流 | 全局额度（分/时/天三级） |
-| 302 | 重定向到图片 URL |
-| metadata | JSON 返回图片元数据（URL/尺寸/格式/文件名） |
-| 管理 | 热重载、健康检查、Prometheus 指标 |
+- Go 1.21 或更高版本
+- 终端环境可访问网络（用于拉取依赖）
 
-**API 不负责：**
+### 运行目录说明
 
-| 职责 | 原因 |
-|------|------|
-| 图片代理 | 流量直达 CDN/OSS，不经过 Go 服务 |
-| 图片缓存 | 由 CDN / 浏览器负责 |
-| 图片缩放 | 由 CDN / 图片处理服务负责 |
-| 图片存储 | 由 OSS / R2 / 对象存储负责 |
+Go 模块根目录为 src/。因此：
 
-> 任何让 API 承担上述"不负责"职责的建议，一律不予采纳。
-
-## 3. 禁止引入的技术
-
-| 类别 | 禁止项 | 原因 |
-|------|--------|------|
-| Web 框架 | Gin / Echo / Fiber / Chi | `net/http` + `http.ServeMux` 已满足全部路由需求 |
-| ORM | GORM / ent / sqlx | 无数据库 |
-| 数据库 | PostgreSQL / MySQL / SQLite | URL 池在内存，配置在 YAML |
-| 缓存 | Redis / Memcached | 限流用内存计数器，URL 池在内存 |
-| 消息队列 | Kafka / RabbitMQ / NATS | 单进程同步处理 |
-| 架构模式 | 微服务拆分 / gRPC | 单进程单二进制是核心优势 |
-
-## 4. 架构约束
-
-```
-Client → Go HTTP API → 302 → External CDN/OSS
-                │
-                ├── Auth (Token)
-                ├── Rate Limit (全局额度)
-                ├── Referer Check (防盗链)
-                └── URL Pool (内存常驻)
+```bash
+cd src
+go build ./...
+go test ./...
 ```
 
-- **限流**：全局计数器（分/时/天三窗口），不按 IP 分桶
-- **客户端 IP**：仅用于日志展示，不参与限流
-- **热重载**：`GET /admin/reload` 刷新内存 URL 池
-- **优雅关闭**：监听 SIGINT/SIGTERM，10s 超时关闭
-- **HTTP 超时**：ReadHeader 5s / Read 15s / Write 20s / Idle 60s
+若从项目根目录直接运行，会导致配置文件和 URL 列表路径解析错误。
 
-## 5. 代码规范
+## 常用开发命令
 
-- 模块根目录为 `src/`，`go build` / `go test` / `go vet` 必须在 `src/` 内执行
-- 运行时路径（config.yaml、urls/*.txt）相对当前工作目录，推荐在根目录运行
-- 文档放 `docs/`，不散落 `.md` 在根目录
-- 尽量少子文件夹，业务逻辑统一在 `src/app/`
-- 构建用 `CGO_ENABLED=0` 纯静态
-- 新增代码**不写大段注释**，需要说明处加一个简短注释
+```bash
+# 在 src/ 目录内执行
+cd src
 
-**结构化日志命名：**
+go test ./...
+go vet ./...
+go test -race ./...
+```
 
-日志统一通过 `logStructured(event, fields)` 输出 JSON 行到 stdout，各 event 类型用到的字段：
+## 代码结构
 
-| event | 字段 | 触发时机 |
-|-------|------|---------|
-| `request` | `ip`, `ua`, `query` | 每次 `GET /` |
-| `redirect` | `ip`, `ua`, `orientation`, `url` | 302 重定向 |
-| `reload` | `portrait`, `landscape`, `pending`, `dead` | `GET /admin/reload` |
-| `clear_dead` | _(无)_ | `POST /admin/clear-dead` |
-| `metadata_retry` | `added`, `dead`, `remaining` | 后台补抓有变化 |
-| `rate_limit_hit` | `ip`, `ua`, `query` | 触发限流 |
-| `error` | `type`, `err`, `orientation` | 异常 |
+| 目录/文件 | 说明 |
+|---|---|
+| src/main.go | 服务入口，启动 HTTP Server |
+| src/app/handler.go | HTTP 请求处理、路由逻辑 |
+| src/app/pool.go | URL 池、metadata 预取与后台补抓 |
+| src/app/config.go | 配置加载与校验 |
+| src/app/cache.go | metadata 缓存持久化 |
+| src/app/ratelimit.go | 全局限流 |
+| src/app/imageinfo.go | 图片元数据探测 |
+| src/app/recent.go | 最近访问追溯 |
 
-通用字段：每条日志自动附带 `event`（事件名）、`ts`（UTC RFC3339 时间戳）。
+## 调试建议
 
-## 6. 改善原则
+### 本地调试
 
-改善应在**不违反上述约束**的前提下进行，优先方向：
+```bash
+cd src
+go build -o ../image-api .
+cd ..
+./image-api
+```
 
-1. **安全性** — Token 比对用 `subtle.ConstantTimeCompare`、日志脱敏
-2. **性能** — 连接复用、Range 请求探测元数据、避免不必要分配
-3. **可靠性** — 优雅关闭、URL 校验、空池保护
-4. **可观测性** — Prometheus 指标、结构化日志
-5. **可维护性** — 测试覆盖、配置校验
-6. **部署能力** — Docker 多阶段构建、systemd、CI/CD 多平台编译
+### 关键观察点
 
-需要引入第 3 节禁止技术、或让 API 承担第 2 节"不负责"职责的建议，不予采纳。
+- 启动日志：配置加载、URL 池数量、监听地址
+- 请求日志：IP、UA、查询参数（Token 已脱敏）
+- 管理接口：/health、/admin/reload、/admin/clear-dead
+
+## 测试与质量
+
+建议在修改逻辑后至少执行：
+
+```bash
+cd src
+go test ./...
+go vet ./...
+```
+
+## 贡献规范
+
+- 新增功能时优先保持项目轻量与简单
+- 不引入 Web 框架、数据库、消息队列等不必要组件
+- 代码注释仅在必要处添加，避免冗长说明
+- 文档更新应与代码变更同步完成
+
+## 备注
+
+如果新增功能会改变当前设计边界（例如让 API 承担图片代理、存储或缓存职责），应先评估是否违背项目定位。

@@ -1,16 +1,24 @@
 # Image API
 
-轻量级随机图片 API，使用 Go 及官方扩展库构建，零框架、无数据库依赖。图片元数据探测支持 WebP（`golang.org/x/image`）。
+## 概览
 
-访问 API 即自动 302 重定向到一张随机图片，浏览器直接展示，图片不经过本服务器。
+Image API 是一个轻量级随机图片服务，基于 Go 标准库和内存 URL 池构建。它不代理图片流量，而是返回一条随机图片地址，适合接入 CDN、OSS 或对象存储。
+
+### 核心能力
+
+- 默认返回 302 跳转到外部图片 URL
+- 支持 portrait / landscape 两种方向
+- 支持 JSON、TEXT、REDIRECT 三种输出格式
+- 支持 Token 鉴权、全局限流、防盗链
+- 支持热重载、健康检查、Prometheus 指标
 
 ## 项目结构
 
-```
+```text
 image-api/
-├── src/                  # Go 工程（模块根目录）
-│   ├── main.go           # 入口
-│   ├── go.mod / go.sum
+├── src/                  # Go 模块根目录
+│   ├── main.go           # 服务入口
+│   ├── go.mod            # Go 模块定义
 │   └── app/              # 业务逻辑包
 │       ├── config.go     # 配置加载与校验
 │       ├── handler.go    # HTTP 处理器
@@ -20,319 +28,263 @@ image-api/
 │       ├── cache.go      # metadata 缓存持久化
 │       ├── ratelimit.go  # 全局限流
 │       └── util.go       # 通用工具
-├── config.yaml           # 配置文件
-├── docs/                 # 项目文档
-├── docker/               # 容器化部署
-│   ├── Dockerfile
-│   ├── docker-compose.yml
-│   └── .env.example
+├── config.yaml           # 运行时配置文件
+├── urls/                 # URL 列表目录
+├── docs/                 # 文档目录
+├── docker/               # Docker 部署文件
 └── LICENSE
 ```
 
 ## 快速开始
 
+### 1. 准备配置与 URL 列表
+
+如果根目录下还没有配置文件，请先复制示例文件：
+
 ```bash
-# 编译（在 src 目录内执行，产物输出到项目根目录）
+cp config.yaml.example config.yaml
+```
+
+然后确认 URL 列表文件存在：
+
+```bash
+ls urls/
+```
+
+### 2. 构建并运行
+
+```bash
 cd src
 go build -o ../image-api .
-
-# 运行（回到项目根目录，默认读取 config.yaml）
 cd ..
 ./image-api
-
-# 指定配置文件
-./image-api /path/to/config.yaml
 ```
 
-> 说明：Go 模块根目录为 `src/`，请在 `src/` 内执行 `go build` / `go run` / `go test` 等命令。所有运行时路径（配置文件、URL 列表）以**当前工作目录**为基准，推荐在项目根目录运行二进制。
-
-> 生产环境部署（systemd 服务、开机自启、日志管理）见 [docs/systemd.md](docs/systemd.md)。
-> Docker Compose 一键构建启动见 [docs/docker.md](docs/docker.md)；首次启动前必须先复制 `config.yaml.example` 为 `config.yaml`，否则 Docker 会把配置文件挂载成目录。
-
-## 开发调试
-
-**前提：**
-
-1. `go` 命令（build / run / test / vet）必须在 `src/` 目录内执行 —— Go 模块根目录在 `src/`，在根目录执行会报 `cannot find main module`。
-2. 程序运行时的配置与 URL 列表路径以**当前工作目录**为基准。直接从 `src/` 执行 `go run .` 会读不到根目录的 `config.yaml` / `urls/`，程序会在此目录自动生成空的默认文件，导致 URL 池为空（访问返回 503）。
-
-**推荐调试方式：在 `src/` 构建，回到根目录运行：**
+### 3. 验证服务
 
 ```bash
-# 一键构建并启动（在项目根目录执行）
-cd src && go build -o ../image-api . && cd .. && ./image-api
-
-# 另开终端验证
-curl http://127.0.0.1:28085/health    # {"pool":{...},"status":"ok",...}
-curl -i http://127.0.0.1:28085/       # 302 → 随机图片
-
-# 停止服务：Ctrl + C
+curl http://127.0.0.1:28085/health
+curl -i http://127.0.0.1:28085/
 ```
 
-**单元测试与静态检查**（在 `src/` 内）：
-
-```bash
-cd src
-go test ./...        # 运行全部测试
-go vet ./...         # 静态检查
-go test -race ./...  # 竞态检测（需要 CGO_ENABLED=1；Windows 需安装 gcc）
-```
-
-**日志排查：** 程序日志全部输出到标准输出（stdout）。启动时依次打印：配置加载、URL 池数量（portrait/landscape）、监听地址、各功能开关（鉴权/限流/防盗链）；每个请求打印一行 `[request] IP=... UA=... Query=...`（`Query` 中的 `token` 参数值已自动脱敏为 `***`），直接在终端观察即可。
-
-**运行参数：**
-
-```bash
-./image-api                      # 默认读取 config.yaml
-./image-api /path/to/config.yaml # 指定配置文件
-./image-api --version            # 查看版本（-v 亦可）
-```
-
-**热重载：** 修改 `urls/*.txt` 后无需重启，调用 `curl http://127.0.0.1:28085/admin/reload` 即可刷新 URL 池。
+> 说明：Go 模块根目录是 src/。建议在项目根目录运行生成的二进制文件，这样配置和 URL 列表路径会按预期读取。
 
 ## 配置说明
 
+下面这份配置是当前版本默认可用的完整示例，字段含义都写在注释里，可以直接复制为 `config.yaml` 使用。
+
 ```yaml
 server:
+  # 服务监听地址，0.0.0.0 表示监听所有网卡
   host: "0.0.0.0"
+  # HTTP 监听端口
   port: 28085
-  # base_path: "/"              # 反代子目录前缀（可选，默认空=无前缀）
-  cache_dir: "cache"            # prefetch 模式下的 metadata 缓存目录
-  metadata_mode: "on_request"   # on_request（默认）：实时探测；prefetch：异步预取+缓存
-  # recent_buffer_size: 50      # 最近访问追溯条数（默认 50，GET /admin/recent）
+  # metadata 缓存目录；prefetch 模式下会把已抓取的信息持久化到这里
+  cache_dir: "cache"
+  # metadata 获取模式：
+  #   on_request  -> 请求时实时探测，启动更快（默认）
+  #   prefetch    -> 启动时预取并后台异步补抓，适合较大 URL 池
+  metadata_mode: "on_request"
+  # 反向代理子路径前缀，例如配置为 /api 后，路由会变为 /api/、/api/health
+  base_path: "/"
+  # 最近访问记录缓冲区大小，默认 50，重启后清空
+  # recent_buffer_size: 50
 
 urls:
-  portrait: "urls/portrait.txt"    # 竖屏 URL 列表
-  landscape: "urls/landscape.txt"  # 横屏 URL 列表
+  # 竖屏图片 URL 列表文件
+  portrait: "urls/portrait.txt"
+  # 横屏图片 URL 列表文件
+  landscape: "urls/landscape.txt"
 
 auth:
-  enabled: false                   # Token 鉴权开关
+  # 是否启用 Token 鉴权
+  enabled: false
+  # 访问接口时允许使用的 Token 列表
   tokens:
-    - "your-secret-token"
+    - "your_secret_token"
+  # 管理接口专用 Token，优先级高于 auth.tokens
+  # admin_token: "your_admin_token"
 
 rate_limit:
-  enabled: false                   # 频率限制开关
+  # 是否启用全局限流
+  enabled: false
+  # 每分钟最大请求数
   per_minute: 30
+  # 每小时最大请求数
   per_hour: 120
+  # 每天最大请求数
   per_day: 300
 
 referer:
-  enabled: false                   # Referer 防盗链开关
-  allow_empty: true                # 是否允许空 Referer
+  # 是否启用 Referer 防盗链
+  enabled: false
+  # 是否允许空 Referer
+  allow_empty: true
+  # 允许访问的 Referer 白名单，支持精确匹配和通配符
   whitelist:
     - "example.com"
-    - "*.example.com"              # 支持通配符
+    - "*.example.com"
 ```
 
-## URL 文件格式
+### 配置项说明
+
+- `server.host`：监听地址，通常保持 `0.0.0.0`。
+- `server.port`：HTTP 服务端口，默认 `28085`。
+- `server.cache_dir`：prefetch 模式下缓存 metadata 的目录。
+- `server.metadata_mode`：
+  - `on_request`：默认值，启动更快；请求 `format=json` 时实时探测图片尺寸。
+  - `prefetch`：启动时把 URL 列表预载入，并后台补抓 metadata。
+- `server.base_path`：给 Nginx / Caddy 反向代理子路径使用。
+- `urls.portrait` / `urls.landscape`：分别指定竖屏和横屏 URL 列表文件。
+- `auth.enabled`：开启后接口请求必须携带 Token。
+- `auth.tokens`：普通接口可使用的 Token。
+- `auth.admin_token`：管理接口专用 Token，优先级更高。
+- `rate_limit.enabled`：开启后对全局请求进行限流。
+- `referer.enabled`：开启后限制 Referer 白名单。
+- `referer.allow_empty`：是否允许空 Referer 访问。
+
+## URL 列表格式
+
+每行一个 URL，支持空行和注释：
 
 ```text
-# 注释行，自动忽略
-# 空行自动忽略
-
+# 注释行
 https://cdn.example.com/img/001.jpg
 https://cdn.example.com/img/002.jpg
 ```
 
-- 一行一个 URL
-- 自动忽略空行和 `#` 开头的注释
-- 自动校验 URL 格式（必须为 http/https）
+## API 说明
 
-## API 接口
+### 1. 获取随机图片
 
-### 获取随机图片
-
-```
+```http
 GET /
 ```
 
-> 若配置了 `base_path`（如 `/api`），端点前缀相应变化：`/api/`、`/api/health`、`/api/admin/reload`。
+这是核心接口。默认会返回一张随机图片地址，并根据情况自动选择 portrait 或 landscape。
+
+#### 可用参数
 
 | 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `orientation` | `portrait`（竖屏）/ `landscape`（横屏） | 根据 UA 自动判断 |
-| `format` | `redirect` / `json` / `text` | `redirect` |
-| `token` | 鉴权 Token（开启鉴权时必填） | - |
+|---|---|---|
+| orientation | 指定方向：`portrait` 或 `landscape` | 未传时根据 User-Agent 自动判断 |
+| format | 输出格式：`redirect` / `json` / `text` | `redirect` |
+| token | 鉴权 Token；开启鉴权时必填 | 无 |
 
-**自动适配逻辑：** 未指定 `orientation` 时，根据 User-Agent 判断设备类型：
-- 手机 → portrait
-- PC / 平板 → landscape
+#### 自动判断逻辑
 
-**返回格式：**
+- 手机类 UA → `portrait`
+- 电脑 / 平板类 UA → `landscape`
+
+#### 返回格式
 
 | format | 行为 |
-|--------|------|
-| 默认 / `redirect` | 302 重定向到图片 URL，浏览器直接展示图片 |
-| `json` | 返回 `{"url":"...","orientation":"..."}` |
-| `text` | 返回纯文本 URL（适合 curl / 脚本） |
+|---|---|
+| `redirect` | 返回 302 跳转，浏览器直接展示图片 |
+| `json` | 返回包含 URL、尺寸、格式、文件名的 JSON |
+| `text` | 返回图片 URL 的纯文本 |
 
-**示例：**
+#### 示例
 
 ```bash
-# 302 跳转
-curl -i "http://localhost:28085/"
-# HTTP/1.1 302 Found
-# Location: https://cdn.example.com/p/001.jpg
+# 默认跳转
+curl -i http://localhost:28085/
 
 # 强制竖屏
 curl -i "http://localhost:28085/?orientation=portrait"
 
-# JSON 格式
+# 返回 JSON
 curl "http://localhost:28085/?format=json"
-# {"url":"https://cdn.example.com/p/001.jpg","orientation":"landscape","width":1920,"height":1080,"format":"jpeg","filename":"001.jpg"}
 
-# 纯文本
+# 返回纯文本 URL
 curl "http://localhost:28085/?format=text"
-# https://cdn.example.com/p/001.jpg
 
-# 带 Token
+# 开启鉴权后使用 Token
+curl -H "Authorization: Bearer your_secret_token" "http://localhost:28085/?format=json"
+## 也可通过 query 参数传递 Token
 curl "http://localhost:28085/?token=your-secret-token&format=json"
-# {"url":"...","orientation":"portrait","width":1080,"height":1920,"format":"webp","filename":"001.webp"}
 ```
 
-### 健康检查
+### 2. 健康检查
 
-```
+```http
 GET /health
 ```
 
-```bash
-curl "http://localhost:28085/health"
-# {"status":"ok","uptime":"2s","requests_since_start":0,"pool":{"portrait":3,"landscape":3,"total":6,"pending":0,"dead":0}}
-```
-
-### 热重载 URL 列表
-
-```
-GET /admin/reload
-```
-
-修改 `portrait.txt` / `landscape.txt` 后无需重启，调用此接口即可刷新内存中的 URL 池。
+返回当前服务状态、运行时长、池子数量和 pending/dead 统计。
 
 ```bash
-curl -H "Authorization: Bearer your-admin-token" "http://localhost:28085/admin/reload"
-# {"status":"reloaded","portrait":5,"landscape":8,"pending":2,"dead":0}
+curl http://localhost:28085/health
 ```
 
-### 最近访问追溯
+### 3. 管理接口
 
+管理接口专门用于刷新池子、清理死链和查看最近访问记录。它们优先使用 `auth.admin_token` 进行鉴权；如果没有配置 `admin_token`，则仅当 `auth.enabled: true` 时才会回退到普通 `auth.tokens` 中的 Token。若 `auth.enabled: false` 且未配置 `admin_token`，管理接口将返回 401。
+
+#### 热重载 URL 池
+
+```http
+POST /admin/reload
 ```
-GET /admin/recent
-```
 
-查看最近返回的图片记录（按时间倒序），避免喜欢的图找不到。
-
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `limit` | 返回条数 | 全部 |
+重新加载 URL 列表，并刷新内存池。适用于修改了 `urls/*.txt` 后立即生效。
 
 ```bash
-curl -H "Authorization: Bearer your-admin-token" "http://localhost:28085/admin/recent?limit=20"
-# {"total":34,"items":[{"url":"...","orientation":"portrait","format":"redirect","at":"..."},...]}
+# 使用 admin_token
+curl -X POST -H "Authorization: Bearer your_admin_token" http://localhost:28085/admin/reload
+
+# 如果未配置 admin_token，则使用普通 Token
+curl -X POST -H "Authorization: Bearer your_secret_token" http://localhost:28085/admin/reload
 ```
 
-缓冲条数由 `server.recent_buffer_size` 配置（默认 50），仅内存保留，重启后清空。
+#### 清空死链
 
-### 清空死链
-
-```
+```http
 POST /admin/clear-dead
 ```
 
-prefetch 模式下连续失败 3 次的 URL 不再重试，此接口清空后下次 reload 重新尝试。
+清空 prefetch 模式下已经判定为死链的 URL，下一次重载时会重新尝试。
 
 ```bash
-curl -X POST -H "Authorization: Bearer your-admin-token" "http://localhost:28085/admin/clear-dead"
-# {"status":"dead links cleared"}
+curl -X POST -H "Authorization: Bearer your_admin_token" http://localhost:28085/admin/clear-dead
 ```
 
-> `/admin/*` 始终要求 Token（`auth.admin_token` 优先，否则回退 `auth.tokens`）。
+#### 查看最近访问记录
 
-## 鉴权
-
-开启 `auth.enabled: true` 后，所有请求需携带 Token：
+```http
+GET /admin/recent
+```
 
 ```bash
-# Header 方式（推荐：Token 不会进入 URL、代理日志与浏览器历史）
-curl -H "Authorization: Bearer your-secret-token" http://localhost:28085/
-
-# Query 参数方式（方便调试；注意 Token 会出现在访问日志中，生产环境慎用）
-curl "http://localhost:28085/?token=your-secret-token"
+curl -H "Authorization: Bearer your_admin_token" "http://localhost:28085/admin/recent?limit=20"
 ```
 
-未授权返回 `401 Unauthorized`。
+### 4. 常见状态码
 
-## 频率限制
-
-开启 `rate_limit.enabled: true` 后，**整个服务所有请求共享统一额度**（不按 IP 分桶），支持三级限制同时生效：
-
-- 每分钟 / 每小时 / 每天
-
-超限返回 `429 Too Many Requests`。
-
-## Referer 防盗链
-
-开启 `referer.enabled: true` 后，仅允许白名单内的 Referer 访问：
-
-- 支持精确匹配：`example.com`
-- 支持通配符：`*.example.com`
-- `allow_empty: true` 允许无 Referer 的请求（如直接访问、curl）
-
-非法 Referer 返回 `403 Forbidden`。
-
-## 错误码
-
-| HTTP 状态码 | 含义 |
-|------------|------|
-| 400 | 参数错误（orientation / format 无效） |
-| 401 | Token 鉴权失败 |
-| 403 | Referer 防盗链拦截 |
-| 429 | 超过访问频率限制 |
-| 500 | 服务器内部错误 |
+| 状态码 | 含义 |
+|---|---|
+| 200 | 请求成功 |
+| 302 | 重定向成功 |
+| 400 | 参数错误 |
+| 401 | 鉴权失败 |
+| 403 | Referer 被拦截 |
+| 429 | 超过限流额度 |
+| 500 | 服务内部错误 |
 | 503 | URL 池为空 |
 
-## 性能设计
+## 部署方式
 
-- URL 列表启动时一次性加载到内存，请求时不读磁盘
-- **`on_request` 模式（默认）**：零启动时间，`format=json` 时实时探测图片尺寸
-- **`prefetch` 模式**：缓存命中秒启动，后台异步补抓全量 metadata；适用于大量 URL 需要快速 `format=json` 响应的场景
-- 图片不经过本服务器，仅返回 302 重定向
-- 仅依赖 `gopkg.in/yaml.v3` 与官方扩展库 `golang.org/x/image`（WebP 解码），无第三方框架
+- 二进制部署：见 [docs/systemd.md](docs/systemd.md)
+- Docker 部署：见 [docs/docker.md](docs/docker.md)
+- 构建与发布：见 [docs/built.md](docs/built.md)
+- 开发调试：见 [docs/development.md](docs/development.md)
 
-**推荐部署架构：**
+## 维护与排障
 
-```
-Client → Cloudflare / Nginx → Go API → 返回 CDN/R2/OSS 图片 URL
-```
+- 访问 /health 可检查服务状态
+- 使用 /admin/* 接口进行管理和排障
+- 运行日志会输出到标准输出，可直接查看启动、重载和请求信息
 
-> 限流为全局限额（与来源 IP 无关），伪造转发头无法绕过；若需要按来源限制，请在前置 Nginx / Cloudflare 层配置。
+## 许可证
 
-### 反代子目录部署
-
-如果希望以 `https://example.com/api/` 这样的**子目录路径**反代到本服务，无需在 Nginx 侧做路径 rewrite，只需在 `config.yaml` 中配置 `server.base_path`：
-
-```yaml
-server:
-  base_path: "/api"    # 路由自动变为 /api/、/api/health、/api/admin/reload
-```
-
-**Nginx 反代配置**（前面**不做 rewrite**，原样转发即可）：
-
-```nginx
-location /api/ {
-    proxy_pass http://127.0.0.1:28085/api/;   # 路径不动，后端自己识别前缀
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-}
-```
-
-**请求路径映射**（`base_path: "/api"` 时）：
-
-| 用户访问 | 反代转发 | 后端路由（base_path 生效后） |
-|----------|----------|-------------------------------|
-| `example.com/api/` | `/api/` | `/api/` → 正常响应 |
-| `example.com/api/?format=json` | `/api/?format=json` | `/api/` → 正常响应 |
-| `example.com/api/health` | `/api/health` | `/api/health` → 健康检查 |
-
-> 原理：`http.StripPrefix` 在请求到达 handler 前自动剥掉前缀，handler 内部逻辑完全不受影响。默认 `base_path` 为空（等同于 `/`），行为与之前完全一致。
+本项目采用 MIT License。详情请参见 [LICENSE](LICENSE)。
