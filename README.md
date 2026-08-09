@@ -47,7 +47,7 @@ cd ..
 > 说明：Go 模块根目录为 `src/`，请在 `src/` 内执行 `go build` / `go run` / `go test` 等命令。所有运行时路径（配置文件、URL 列表）以**当前工作目录**为基准，推荐在项目根目录运行二进制。
 
 > 生产环境部署（systemd 服务、开机自启、日志管理）见 [docs/systemd.md](docs/systemd.md)。
-> Docker Compose 一键构建启动见 [docs/docker.md](docs/docker.md)。
+> Docker Compose 一键构建启动见 [docs/docker.md](docs/docker.md)；首次启动前必须先复制 `config.yaml.example` 为 `config.yaml`，否则 Docker 会把配置文件挂载成目录。
 
 ## 开发调试
 

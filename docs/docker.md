@@ -25,6 +25,9 @@ cd docker
 # 复制环境变量示例（可选，默认值即可用）
 cp .env.example .env
 
+# 复制配置文件（必选）
+cp ../config.yaml.example ../config.yaml
+
 # 构建镜像并后台启动
 docker compose up -d --build
 
