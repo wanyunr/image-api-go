@@ -1,6 +1,9 @@
 # image-api-go 配置模板
 # 复制为 config.yaml 后按需修改：cp config.yaml.example config.yaml
 
+# 图片来源：url（URL 列表，默认）| local（本机目录），二选一
+source: "url"
+
 server:
   host: "0.0.0.0"            # 监听地址
   port: 28085                # 监听端口
@@ -12,6 +15,11 @@ server:
 urls:
   portrait: "urls/portrait.txt"    # 竖屏 URL 列表
   landscape: "urls/landscape.txt"  # 横屏 URL 列表
+
+local:
+  extensions: [".jpg", ".jpeg", ".png", ".webp", ".gif"]
+  portrait_dirs: ["images/portrait"]    # 竖屏图片目录
+  landscape_dirs: ["images/landscape"]  # 横屏图片目录
 
 auth:
   enabled: false             # Token 鉴权开关

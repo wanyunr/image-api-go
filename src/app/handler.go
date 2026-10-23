@@ -4,8 +4,11 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -92,6 +95,9 @@ func (h *Handler) ServeImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 随机接口每次都应返回新图，禁止浏览器缓存和条件请求复用。
+	setNoCacheHeaders(w)
+
 	orientation := r.URL.Query().Get("orientation")
 	if orientation == "" {
 		device := DetectDeviceType(ua)
@@ -111,12 +117,22 @@ func (h *Handler) ServeImage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Bad Request: format must be json, text or redirect", http.StatusBadRequest)
 		return
 	}
+	// local 图源不存在"外部地址"可返回，只支持直接输出文件。
+	if h.cfg.UsesLocal() && (format == "json" || format == "text") {
+		logStructured("error", map[string]any{"type": "local_format_unsupported", "format": format})
+		http.Error(w, "Bad Request: source=local only supports format=redirect", http.StatusBadRequest)
+		return
+	}
 
-	img, err := h.pool.Random(orientation)
+	img, err := h.pickImage(orientation)
 	if err != nil {
 		logStructured("error", map[string]any{"type": "pool_error", "err": err.Error(), "orientation": orientation})
 		if errors.Is(err, ErrPoolEmpty) {
 			http.Error(w, "Service Unavailable: URL pool is empty", http.StatusServiceUnavailable)
+			return
+		}
+		if errors.Is(err, ErrLocalImageMissing) {
+			http.Error(w, "Service Unavailable: local image files are missing", http.StatusServiceUnavailable)
 			return
 		}
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -154,9 +170,104 @@ func (h *Handler) ServeImage(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Write([]byte(img.URL))
 	default:
+		if img.LocalPath != "" {
+			if err := serveFileNoConditional(w, r, img.LocalPath); err != nil {
+				logStructured("error", map[string]any{"type": "serve_local_error", "err": err.Error(), "path": img.LocalPath})
+				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+				return
+			}
+			logStructured("serve_local", map[string]any{"ip": ip, "ua": ua, "orientation": orientation, "path": img.LocalPath})
+			return
+		}
 		http.Redirect(w, r, img.URL, http.StatusFound)
 		logStructured("redirect", map[string]any{"ip": ip, "ua": ua, "orientation": orientation, "url": img.URL})
 	}
+}
+
+// localPickAttempts 是本地文件失效时的重选次数。
+const localPickAttempts = 3
+
+// pickImage 随机取一张可用的图片。本地文件若在扫描后被删除，
+// 丢弃这一张并在剩余候选中重选，最多尝试 localPickAttempts 次，
+// 避免随机接口稳定返回坏图，同时保证循环次数有上限。
+func (h *Handler) pickImage(orientation string) (ImageInfo, error) {
+	tried := make(map[string]struct{}, localPickAttempts)
+	var missing error
+	for i := 0; i < localPickAttempts; i++ {
+		img, err := h.pool.RandomExcluding(orientation, tried)
+		if err != nil {
+			// 候选用尽：若过程中遇到过缺失文件，返回更具体的错误。
+			if missing != nil {
+				return ImageInfo{}, fmt.Errorf("%w: %v", ErrLocalImageMissing, missing)
+			}
+			return ImageInfo{}, err
+		}
+		if img.LocalPath == "" {
+			return img, nil
+		}
+
+		_, statErr := os.Stat(img.LocalPath)
+		if statErr == nil {
+			return img, nil
+		}
+		if !os.IsNotExist(statErr) {
+			// 权限等其它问题交给读取阶段报错，不当作文件缺失处理。
+			return img, nil
+		}
+		missing = statErr
+		tried[img.LocalPath] = struct{}{}
+		logStructured("error", map[string]any{"type": "local_file_missing", "path": img.LocalPath})
+	}
+	if missing != nil {
+		return ImageInfo{}, fmt.Errorf("%w: %v", ErrLocalImageMissing, missing)
+	}
+	return ImageInfo{}, fmt.Errorf("%w: %s", ErrPoolEmpty, orientation)
+}
+
+// ServeLocal 提供本地图片的静态访问入口。
+// 只允许访问启动时扫描到的文件，避免目录穿越和隐藏文件暴露。
+func (h *Handler) ServeLocal(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.checkReferer(r) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	if !h.checkAuth(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if !h.limiter.Allow() {
+		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+		return
+	}
+
+	path, ok := h.pool.LocalFile(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeFile(w, r, path)
+}
+
+func setNoCacheHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+}
+
+// serveFileNoConditional 以零修改时间返回文件，避免 If-Modified-Since 命中 304。
+func serveFileNoConditional(w http.ResponseWriter, r *http.Request, path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	http.ServeContent(w, r, filepath.Base(path), time.Time{}, f)
+	return nil
 }
 
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
@@ -182,7 +293,7 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Reload(w http.ResponseWriter, r *http.Request) {
-	stats, err := h.pool.Load(h.cfg.URLs.Portrait, h.cfg.URLs.Landscape, h.cfg.Server.CacheDir)
+	stats, err := h.pool.Load(h.cfg.URLs.Portrait, h.cfg.URLs.Landscape, h.cfg.Server.CacheDir, h.cfg.Source, h.cfg.Local, h.cfg.Server.BasePath)
 	if err != nil {
 		log.Printf("[reload failed] %v", err)
 		http.Error(w, "Reload Failed: "+err.Error(), http.StatusInternalServerError)
@@ -198,6 +309,9 @@ func (h *Handler) Reload(w http.ResponseWriter, r *http.Request) {
 		logStructured("reload", map[string]any{
 			"portrait": stats.Portrait, "landscape": stats.Landscape,
 		})
+	}
+	if stats.Portrait == 0 || stats.Landscape == 0 {
+		log.Printf("[警告] reload 后存在空池: portrait=%d landscape=%d", stats.Portrait, stats.Landscape)
 	}
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

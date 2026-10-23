@@ -74,6 +74,9 @@ func filenameFromURL(rawURL string) string {
 	if idx := strings.LastIndex(s, "/"); idx != -1 {
 		s = s[idx+1:]
 	}
+	if name, err := url.PathUnescape(s); err == nil {
+		return name
+	}
 	return s
 }
 

@@ -122,7 +122,9 @@ PrivateTmp=true
 ReadWritePaths=/opt/image-api
 ```
 
-如需刷新 URL 池，可执行：
+`source: local` 时，请确保运行服务的用户对 `local.portrait_dirs` / `local.landscape_dirs` 指向的目录有读权限，文件由服务直接读取并返回。
+
+如需刷新 URL 池（包括重新扫描本地图片目录），可执行：
 
 ```bash
 curl http://127.0.0.1:28085/admin/reload

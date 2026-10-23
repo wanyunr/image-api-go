@@ -38,7 +38,7 @@ func main() {
 
 	pool := app.NewURLPool()
 	pool.SetMetadataMode(cfg.Server.MetadataMode)
-	stats, err := pool.Load(cfg.URLs.Portrait, cfg.URLs.Landscape, cfg.Server.CacheDir)
+	stats, err := pool.Load(cfg.URLs.Portrait, cfg.URLs.Landscape, cfg.Server.CacheDir, cfg.Source, cfg.Local, cfg.Server.BasePath)
 	if err != nil {
 		log.Fatalf("[启动失败] %v", err)
 	}
@@ -49,6 +49,16 @@ func main() {
 		log.Printf("[URL池] portrait=%d landscape=%d pending=%d dead=%d", stats.Portrait, stats.Landscape, stats.Pending, stats.Dead)
 	} else {
 		log.Printf("[URL池] portrait=%d landscape=%d", stats.Portrait, stats.Landscape)
+	}
+	log.Printf("[图片来源] source=%s", cfg.Source)
+	if cfg.UsesLocal() {
+		log.Printf("[本地图片] portrait=%d landscape=%d", stats.LocalPortrait, stats.LocalLandscape)
+	}
+	if stats.Portrait == 0 {
+		log.Printf("[警告] portrait 池为空，请检查 %s", poolHint(cfg, "portrait"))
+	}
+	if stats.Landscape == 0 {
+		log.Printf("[警告] landscape 池为空，请检查 %s", poolHint(cfg, "landscape"))
 	}
 
 	limiter := app.NewRateLimiter(cfg.RateLimit)
@@ -63,6 +73,9 @@ func main() {
 	}
 	target.HandleFunc("/", handler.ServeImage)
 	target.HandleFunc("/health", handler.Health)
+	if cfg.UsesLocal() {
+		target.HandleFunc("/local/", handler.ServeLocal)
+	}
 	adminMux := http.NewServeMux()
 	adminMux.HandleFunc("/admin/reload", handler.Reload)
 	adminMux.HandleFunc("/admin/clear-dead", handler.ClearDead)
@@ -119,4 +132,18 @@ func main() {
 	} else {
 		log.Printf("[退出] 已关闭")
 	}
+}
+
+// poolHint 给空池告警指明该检查哪一处配置。
+func poolHint(cfg *app.Config, orientation string) string {
+	if cfg.UsesLocal() {
+		if orientation == "portrait" {
+			return fmt.Sprintf("local.portrait_dirs %v", cfg.Local.PortraitDirs)
+		}
+		return fmt.Sprintf("local.landscape_dirs %v", cfg.Local.LandscapeDirs)
+	}
+	if orientation == "portrait" {
+		return cfg.URLs.Portrait
+	}
+	return cfg.URLs.Landscape
 }

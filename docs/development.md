@@ -6,7 +6,7 @@
 
 - 以 Go 标准库为主，避免引入重型框架
 - 保持单二进制、无数据库、零外部依赖服务的定位
-- 图片本体不经过 API 服务，服务只负责选择和返回地址
+- 图片本体默认不经过 API 服务，服务只负责选择和返回地址；`source: local` 时例外，本地文件由服务直接返回
 - 代码实现尽量简单、直接、可维护
 
 ## 开发环境
@@ -51,6 +51,19 @@ go test -race ./...
 | src/app/ratelimit.go | 全局限流 |
 | src/app/imageinfo.go | 图片元数据探测 |
 | src/app/recent.go | 最近访问追溯 |
+
+## 本地图源（source: local）流程
+
+启动扫描、请求处理与异常分支的完整流程见下图（可编辑源文件：[local-mode-flow.excalidraw](local-mode-flow.excalidraw)，图片：[local-mode-flow.png](local-mode-flow.png)，可用 [Excalidraw](https://excalidraw.com) 打开修改）：
+
+![本地图源流程图](local-mode-flow.png)
+
+图中几处与实现强相关的约定：
+
+- **扫描**：目录内递归遍历，跳过隐藏文件与隐藏子目录；扩展名按 `local.extensions` 白名单匹配（不区分大小写），跨方向目录用 `seen` 去重；单文件解码失败只跳过该文件，目录不可访问则整个 `Load` 失败、进程退出。
+- **路由**：`routePath` 由 `sha256(绝对路径)` 前 10 字节生成 `/local/<id>/<name>`，静态路由只接受启动扫描时登记过的路径，因此无目录穿越风险；文件被删除后会从白名单中消失，需 `/admin/reload` 重新扫描。
+- **失效重选**：随机接口对本地图按 `os.Stat` 校验，缺失则丢弃并重选（最多 3 个不同文件），全缺失返回 503；权限等其它错误按"存在"处理，交给读取阶段报 500。
+- **缓存与格式**：本地图片不写入 metadata cache；`source: local` 时 `format=json` / `text` 一律 400，仅支持直接返回文件。
 
 ## 调试建议
 

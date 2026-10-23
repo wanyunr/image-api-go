@@ -62,6 +62,7 @@ docker compose exec image-api sh
 - 修改 docker/.env 可调整端口、时区和代理设置
 - 修改项目根目录的 config.yaml / urls/*.txt 后，执行 `docker compose restart` 即可生效
 - metadata_mode 默认可配置为 `on_request` 或 `prefetch`
+- `source: local` 时，需要把宿主机图片目录挂载进容器，并在 `local.portrait_dirs` / `local.landscape_dirs` 中使用容器内路径。docker-compose.yml 已预留 `../images:/app/images:ro` 注释项，按需取消注释
 
 ## 7. 常见问题
 

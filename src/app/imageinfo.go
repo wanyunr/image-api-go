@@ -7,6 +7,7 @@ import (
 	_ "image/png"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -15,10 +16,11 @@ import (
 
 // ImageInfo 图片元数据
 type ImageInfo struct {
-	URL    string `json:"url"`
-	Width  int    `json:"width"`
-	Height int    `json:"height"`
-	Format string `json:"format"`
+	URL       string `json:"url"`
+	Width     int    `json:"width"`
+	Height    int    `json:"height"`
+	Format    string `json:"format"`
+	LocalPath string `json:"-"`
 }
 
 var imageClient = &http.Client{Timeout: 5 * time.Second}
@@ -43,6 +45,28 @@ func FetchImageInfo(imgURL string) ImageInfo {
 	cfg, format, err := image.DecodeConfig(resp.Body)
 	if err != nil {
 		log.Printf("[解析失败] %s: %v", imgURL, err)
+		return info
+	}
+
+	info.Width = cfg.Width
+	info.Height = cfg.Height
+	info.Format = format
+	return info
+}
+
+// FetchLocalImageInfo 直接从磁盘读取本地图片的尺寸和格式。
+func FetchLocalImageInfo(path, publicURL string) ImageInfo {
+	info := ImageInfo{URL: publicURL, LocalPath: path}
+	f, err := os.Open(path)
+	if err != nil {
+		log.Printf("[本地探测失败] %s: %v", path, err)
+		return info
+	}
+	defer f.Close()
+
+	cfg, format, err := image.DecodeConfig(f)
+	if err != nil {
+		log.Printf("[本地解析失败] %s: %v", path, err)
 		return info
 	}
 

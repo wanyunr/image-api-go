@@ -9,9 +9,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	SourceLocal = "local"
+	SourceURL   = "url"
+)
+
 type Config struct {
+	Source    string          `yaml:"source"`
 	Server    ServerConfig    `yaml:"server"`
 	URLs      URLsConfig      `yaml:"urls"`
+	Local     LocalConfig     `yaml:"local"`
 	Auth      AuthConfig      `yaml:"auth"`
 	RateLimit RateLimitConfig `yaml:"rate_limit"`
 	Referer   RefererConfig   `yaml:"referer"`
@@ -29,6 +36,20 @@ type ServerConfig struct {
 type URLsConfig struct {
 	Portrait  string `yaml:"portrait"`
 	Landscape string `yaml:"landscape"`
+}
+
+type LocalConfig struct {
+	PortraitDirs  []string `yaml:"portrait_dirs"`
+	LandscapeDirs []string `yaml:"landscape_dirs"`
+	Extensions    []string `yaml:"extensions"`
+}
+
+func (c *Config) UsesLocal() bool {
+	return c.Source != SourceURL
+}
+
+func (c *Config) UsesURL() bool {
+	return c.Source == SourceURL
 }
 
 type AuthConfig struct {
@@ -82,6 +103,7 @@ func LoadConfig(path string) (*Config, bool, error) {
 
 func DefaultConfig() *Config {
 	return &Config{
+		Source: SourceURL,
 		Server: ServerConfig{
 			Host:         "0.0.0.0",
 			Port:         28085,
@@ -91,6 +113,11 @@ func DefaultConfig() *Config {
 		URLs: URLsConfig{
 			Portrait:  "urls/portrait.txt",
 			Landscape: "urls/landscape.txt",
+		},
+		Local: LocalConfig{
+			Extensions:    defaultLocalExtensions(),
+			PortraitDirs:  []string{"images/portrait"},
+			LandscapeDirs: []string{"images/landscape"},
 		},
 		Auth: AuthConfig{
 			Enabled: false,
@@ -115,6 +142,14 @@ func createDefaultConfig(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+	if cfg.UsesLocal() {
+		dirs := append(append([]string{}, cfg.Local.PortraitDirs...), cfg.Local.LandscapeDirs...)
+		for _, dir := range dirs {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return err
+			}
+		}
+	}
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return err
@@ -124,6 +159,13 @@ func createDefaultConfig(path string) error {
 }
 
 func (c *Config) Validate() error {
+	if c.Source == "" {
+		// 兼容旧配置：未声明 source 时保持 URL 列表模式，与升级前行为一致。
+		c.Source = SourceURL
+	}
+	if c.Source != SourceLocal && c.Source != SourceURL {
+		return fmt.Errorf("source 必须是 local 或 url，当前值: %q", c.Source)
+	}
 	if c.Server.Port <= 0 || c.Server.Port > 65535 {
 		return fmt.Errorf("server.port 必须在 1-65535 之间，当前值: %d", c.Server.Port)
 	}
@@ -147,11 +189,13 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("server.base_path 不能包含特殊字符，当前值: %q", c.Server.BasePath)
 		}
 	}
-	if c.URLs.Portrait == "" {
-		return fmt.Errorf("urls.portrait 不能为空")
-	}
-	if c.URLs.Landscape == "" {
-		return fmt.Errorf("urls.landscape 不能为空")
+	if c.UsesURL() {
+		if c.URLs.Portrait == "" {
+			return fmt.Errorf("source 为 url 时，urls.portrait 不能为空")
+		}
+		if c.URLs.Landscape == "" {
+			return fmt.Errorf("source 为 url 时，urls.landscape 不能为空")
+		}
 	}
 	if c.Auth.Enabled && len(c.Auth.Tokens) == 0 {
 		return fmt.Errorf("auth.enabled 为 true 时，auth.tokens 不能为空")
@@ -163,6 +207,30 @@ func (c *Config) Validate() error {
 	}
 	if c.Referer.Enabled && len(c.Referer.Whitelist) == 0 {
 		return fmt.Errorf("referer.enabled 为 true 时，referer.whitelist 不能为空")
+	}
+	if err := c.Local.validate(c.Source); err != nil {
+		return err
+	}
+	return nil
+}
+
+func defaultLocalExtensions() []string {
+	return []string{".jpg", ".jpeg", ".png", ".webp", ".gif"}
+}
+
+func (l *LocalConfig) validate(source string) error {
+	if len(l.Extensions) == 0 {
+		l.Extensions = defaultLocalExtensions()
+	}
+	for i, ext := range l.Extensions {
+		ext = strings.ToLower(strings.TrimSpace(ext))
+		if ext != "" && !strings.HasPrefix(ext, ".") {
+			ext = "." + ext
+		}
+		l.Extensions[i] = ext
+	}
+	if source == SourceLocal && len(l.PortraitDirs) == 0 && len(l.LandscapeDirs) == 0 {
+		return fmt.Errorf("source 为 local 时，至少需要配置一个 local.portrait_dirs 或 local.landscape_dirs")
 	}
 	return nil
 }
