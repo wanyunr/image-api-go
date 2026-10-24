@@ -56,6 +56,8 @@ type PoolSnapshot struct {
 type URLPool struct {
 	current      atomic.Pointer[PoolSnapshot]
 	mu           sync.Mutex
+	loadMu       sync.Mutex // 串行化 Load，避免并发 reload 交错构建
+	cacheMu      sync.Mutex // 串行化缓存落盘
 	cacheDir     string
 	metadataMode string
 	rng          *rand.Rand
@@ -82,7 +84,9 @@ func (p *URLPool) SetMetadataMode(mode string) {
 	if mode == "" {
 		mode = "prefetch"
 	}
+	p.mu.Lock()
 	p.metadataMode = mode
+	p.mu.Unlock()
 }
 
 func newRandGenerator() *rand.Rand {
@@ -99,6 +103,9 @@ func newRandGenerator() *rand.Rand {
 // Load 完整构建新 Snapshot 后原子替换。
 // 先读文件 → 扫描本地目录 → 构建 pool → 构建 metadata → 一切就绪 → 原子 swap。
 func (p *URLPool) Load(portraitFile, landscapeFile, cacheDir, source string, local LocalConfig, basePath string) (LoadStats, error) {
+	p.loadMu.Lock()
+	defer p.loadMu.Unlock()
+
 	var portraitURLs, landscapeURLs []string
 	var createdPortrait, createdLandscape bool
 	var err error
@@ -127,7 +134,9 @@ func (p *URLPool) Load(portraitFile, landscapeFile, cacheDir, source string, loc
 		}
 	}
 
+	p.mu.Lock()
 	p.cacheDir = cacheDir
+	p.mu.Unlock()
 
 	stats := LoadStats{
 		CreatedFiles:   createdPortrait || createdLandscape,
@@ -410,16 +419,23 @@ func (p *URLPool) ClearDead() {
 }
 
 func (p *URLPool) saveCache() error {
-	if p.metadataMode != "prefetch" || p.cacheDir == "" {
+	p.mu.Lock()
+	mode, dir := p.metadataMode, p.cacheDir
+	p.mu.Unlock()
+	if mode != "prefetch" || dir == "" {
 		return nil
 	}
+
+	p.cacheMu.Lock()
+	defer p.cacheMu.Unlock()
+
 	s := p.current.Load()
 	cache := &Cache{
 		Portrait:  remoteInfos(s.Portrait),
 		Landscape: remoteInfos(s.Landscape),
 		Dead:      append([]DeadItem(nil), s.Dead...),
 	}
-	return SaveCache(p.cacheDir, cache)
+	return SaveCache(dir, cache)
 }
 
 func buildWithCache(urls []string, cacheMap map[string]ImageInfo, orientation string) ([]ImageInfo, []pendingItem) {
@@ -563,6 +579,11 @@ func scanLocalDirs(dirs []string, local LocalConfig, basePath string, files map[
 				if d.IsDir() {
 					return fs.SkipDir
 				}
+				return nil
+			}
+			// 符号链接一律跳过：WalkDir 不会进入链接目录，但链接文件会被
+			// 当作普通文件读取，进而把配置目录之外的内容纳入白名单。
+			if d.Type()&fs.ModeSymlink != 0 {
 				return nil
 			}
 			if d.IsDir() {

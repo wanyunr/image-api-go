@@ -7,7 +7,6 @@ import (
 	_ "image/png"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -57,7 +56,7 @@ func FetchImageInfo(imgURL string) ImageInfo {
 // FetchLocalImageInfo 直接从磁盘读取本地图片的尺寸和格式。
 func FetchLocalImageInfo(path, publicURL string) ImageInfo {
 	info := ImageInfo{URL: publicURL, LocalPath: path}
-	f, err := os.Open(path)
+	f, err := openLocalFile(path)
 	if err != nil {
 		log.Printf("[本地探测失败] %s: %v", path, err)
 		return info

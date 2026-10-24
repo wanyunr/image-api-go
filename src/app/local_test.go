@@ -1,6 +1,8 @@
 package app
 
 import (
+	"bytes"
+	"encoding/json"
 	"image"
 	"image/color"
 	"image/png"
@@ -9,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -347,6 +350,162 @@ func TestScanLocalDedupesAcrossOrientations(t *testing.T) {
 	}
 	if stats.LocalPortrait != 1 || stats.LocalLandscape != 0 {
 		t.Fatalf("同一目录重复配置时应只归入一个方向: %+v", stats)
+	}
+}
+
+func TestServeLocalRejectsSymlinkSwap(t *testing.T) {
+	portraitDir, landscapeDir := setupLocalDirs(t)
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "secret.png")
+	writeTestPNG(t, secret, 64, 64)
+
+	cfg := DefaultConfig()
+	cfg.Source = SourceLocal
+	cfg.Local = LocalConfig{
+		PortraitDirs:  []string{portraitDir},
+		LandscapeDirs: []string{landscapeDir},
+		Extensions:    defaultLocalExtensions(),
+	}
+	pool := NewURLPool()
+	pool.SetMetadataMode("on_request")
+	if _, err := pool.Load("", "", "", cfg.Source, cfg.Local, ""); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(cfg, pool, NewRateLimiter(cfg.RateLimit))
+
+	p1 := filepath.Join(portraitDir, "p1.png")
+	_, route := localRouteURLs("", p1)
+	serveStatic := func() *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.ServeLocal(rec, httptest.NewRequest(http.MethodGet, route, nil))
+		return rec
+	}
+
+	// 扫描后覆盖为普通文件：应继续可服务（不把文件身份钉死在扫描时刻）。
+	writeTestPNG(t, p1, 280, 640)
+	rec := serveStatic()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("覆盖普通文件后静态路由 = %d, want 200", rec.Code)
+	}
+	if cfgImg, format, err := image.DecodeConfig(bytes.NewReader(rec.Body.Bytes())); err != nil ||
+		format != "png" || cfgImg.Width != 280 || cfgImg.Height != 640 {
+		t.Fatalf("覆盖后返回内容不符: %v %s %dx%d", err, format, cfgImg.Width, cfgImg.Height)
+	}
+
+	// 扫描后替换为指向目录外的符号链接：静态路由必须 404，不能返回链接目标。
+	if err := os.Remove(p1); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, p1); err != nil {
+		t.Skipf("当前环境不支持符号链接: %v", err)
+	}
+	if rec := serveStatic(); rec.Code != http.StatusNotFound {
+		t.Fatalf("符号链接文件静态路由 = %d, want 404", rec.Code)
+	}
+
+	// 随机接口应跳过坏文件，返回剩余的正常图片，且绝不能返回 secret(64x64)。
+	for i := 0; i < 15; i++ {
+		rec := httptest.NewRecorder()
+		h.ServeImage(rec, httptest.NewRequest(http.MethodGet, "/?orientation=portrait", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("仍有可用图时应 200，实际 %d", rec.Code)
+		}
+		cfgImg, format, err := image.DecodeConfig(bytes.NewReader(rec.Body.Bytes()))
+		if err != nil || format != "png" {
+			t.Fatalf("响应不是 PNG: %v %q", err, format)
+		}
+		if cfgImg.Width == 64 && cfgImg.Height == 64 {
+			t.Fatal("随机接口返回了符号链接指向的 secret.png")
+		}
+	}
+
+	// 剩余文件也被替换：返回 503 而不是读取链接目标。
+	p2 := filepath.Join(portraitDir, "nested", "p2.png")
+	if err := os.Remove(p2); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, p2); err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	h.ServeImage(rec, httptest.NewRequest(http.MethodGet, "/?orientation=portrait", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("全部被替换为符号链接时 = %d, want 503", rec.Code)
+	}
+}
+
+func TestPoolConcurrentLoadNoRace(t *testing.T) {
+	portraitDir, _ := setupLocalDirs(t)
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+
+	pool := NewURLPool()
+	pool.SetMetadataMode("prefetch")
+	local := LocalConfig{
+		PortraitDirs: []string{portraitDir},
+		Extensions:   defaultLocalExtensions(),
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := pool.Load("", "", cacheDir, SourceLocal, local, ""); err != nil {
+				t.Errorf("并发 Load 失败: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	data, err := os.ReadFile(filepath.Join(cacheDir, "metadata.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cache Cache
+	if err := json.Unmarshal(data, &cache); err != nil {
+		t.Fatalf("并发 Load 后缓存损坏: %v", err)
+	}
+}
+
+func TestScanLocalSkipsSymlinks(t *testing.T) {
+	portraitDir, _ := setupLocalDirs(t)
+	outside := t.TempDir()
+	target := filepath.Join(outside, "outside.png")
+	writeTestPNG(t, target, 10, 10)
+
+	if err := os.Symlink(target, filepath.Join(portraitDir, "sneaky.png")); err != nil {
+		t.Skipf("当前环境不支持符号链接: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(portraitDir, "sneaky-dir")); err != nil {
+		t.Skipf("当前环境不支持符号链接: %v", err)
+	}
+
+	pool := NewURLPool()
+	pool.SetMetadataMode("on_request")
+	stats, err := pool.Load("", "", "", SourceLocal, LocalConfig{
+		PortraitDirs: []string{portraitDir},
+		Extensions:   defaultLocalExtensions(),
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.LocalPortrait != 2 {
+		t.Fatalf("符号链接应被跳过，本地数量 = %d, want 2", stats.LocalPortrait)
+	}
+
+	snapshot := pool.current.Load()
+	for _, info := range snapshot.Portrait {
+		if strings.Contains(info.LocalPath, "sneaky") {
+			t.Fatalf("符号链接进了池: %s", info.LocalPath)
+		}
+	}
+	if len(snapshot.LocalFiles) != 2 {
+		t.Fatalf("静态路由白名单 = %d 项, want 2", len(snapshot.LocalFiles))
+	}
+	for route := range snapshot.LocalFiles {
+		if strings.Contains(route, "sneaky") {
+			t.Fatalf("符号链接被登记为静态路由: %s", route)
+		}
 	}
 }
 

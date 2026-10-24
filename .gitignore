@@ -25,6 +25,5 @@ tools/batch-convert/landscape/
 .workbuddy/
 src/cache/metadata.json
 image-api~
-test/
-.gitignore
+/test/
 .commandcode/

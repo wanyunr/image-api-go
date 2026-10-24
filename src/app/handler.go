@@ -124,7 +124,7 @@ func (h *Handler) ServeImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	img, err := h.pickImage(orientation)
+	img, localFile, err := h.pickImage(orientation)
 	if err != nil {
 		logStructured("error", map[string]any{"type": "pool_error", "err": err.Error(), "orientation": orientation})
 		if errors.Is(err, ErrPoolEmpty) {
@@ -137,6 +137,9 @@ func (h *Handler) ServeImage(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
+	}
+	if localFile != nil {
+		defer localFile.Close()
 	}
 
 	effectiveFormat := format
@@ -170,12 +173,8 @@ func (h *Handler) ServeImage(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Write([]byte(img.URL))
 	default:
-		if img.LocalPath != "" {
-			if err := serveFileNoConditional(w, r, img.LocalPath); err != nil {
-				logStructured("error", map[string]any{"type": "serve_local_error", "err": err.Error(), "path": img.LocalPath})
-				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-				return
-			}
+		if localFile != nil {
+			serveFileHandle(w, r, filepath.Base(img.LocalPath), localFile)
 			logStructured("serve_local", map[string]any{"ip": ip, "ua": ua, "orientation": orientation, "path": img.LocalPath})
 			return
 		}
@@ -187,10 +186,11 @@ func (h *Handler) ServeImage(w http.ResponseWriter, r *http.Request) {
 // localPickAttempts 是本地文件失效时的重选次数。
 const localPickAttempts = 3
 
-// pickImage 随机取一张可用的图片。本地文件若在扫描后被删除，
-// 丢弃这一张并在剩余候选中重选，最多尝试 localPickAttempts 次，
-// 避免随机接口稳定返回坏图，同时保证循环次数有上限。
-func (h *Handler) pickImage(orientation string) (ImageInfo, error) {
+// pickImage 随机取一张可用的图片。本地图源会在挑选时直接打开文件：
+// 文件若在扫描后被删除，os.Open 会返回 ENOENT，丢弃这一张并在剩余候选
+// 中重选（最多 localPickAttempts 次），既避免选中坏图，也没有 stat/open
+// 之间的竞态窗口。远程 URL 不返回文件句柄。
+func (h *Handler) pickImage(orientation string) (ImageInfo, *os.File, error) {
 	tried := make(map[string]struct{}, localPickAttempts)
 	var missing error
 	for i := 0; i < localPickAttempts; i++ {
@@ -198,30 +198,37 @@ func (h *Handler) pickImage(orientation string) (ImageInfo, error) {
 		if err != nil {
 			// 候选用尽：若过程中遇到过缺失文件，返回更具体的错误。
 			if missing != nil {
-				return ImageInfo{}, fmt.Errorf("%w: %v", ErrLocalImageMissing, missing)
+				return ImageInfo{}, nil, fmt.Errorf("%w: %v", ErrLocalImageMissing, missing)
 			}
-			return ImageInfo{}, err
+			return ImageInfo{}, nil, err
 		}
 		if img.LocalPath == "" {
-			return img, nil
+			return img, nil, nil
 		}
 
-		_, statErr := os.Stat(img.LocalPath)
-		if statErr == nil {
-			return img, nil
+		f, openErr := openLocalFile(img.LocalPath)
+		if openErr == nil {
+			return img, f, nil
 		}
-		if !os.IsNotExist(statErr) {
-			// 权限等其它问题交给读取阶段报错，不当作文件缺失处理。
-			return img, nil
+		if errors.Is(openErr, errLocalFileChanged) {
+			// 扫描后被替换成符号链接/其它文件：当作不可用，排除后重选。
+			missing = openErr
+			tried[img.LocalPath] = struct{}{}
+			logStructured("error", map[string]any{"type": "local_file_changed", "path": img.LocalPath})
+			continue
 		}
-		missing = statErr
+		if !os.IsNotExist(openErr) {
+			// 权限等其它问题交给调用方按 500 处理，不当作文件缺失重选。
+			return ImageInfo{}, nil, openErr
+		}
+		missing = openErr
 		tried[img.LocalPath] = struct{}{}
 		logStructured("error", map[string]any{"type": "local_file_missing", "path": img.LocalPath})
 	}
 	if missing != nil {
-		return ImageInfo{}, fmt.Errorf("%w: %v", ErrLocalImageMissing, missing)
+		return ImageInfo{}, nil, fmt.Errorf("%w: %v", ErrLocalImageMissing, missing)
 	}
-	return ImageInfo{}, fmt.Errorf("%w: %s", ErrPoolEmpty, orientation)
+	return ImageInfo{}, nil, fmt.Errorf("%w: %s", ErrPoolEmpty, orientation)
 }
 
 // ServeLocal 提供本地图片的静态访问入口。
@@ -249,7 +256,28 @@ func (h *Handler) ServeLocal(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	http.ServeFile(w, r, path)
+
+	f, err := openLocalFile(path)
+	if err != nil {
+		// 缺失或扫描后被替换为符号链接：一律按不存在处理，避免暴露路径状态。
+		if os.IsNotExist(err) || errors.Is(err, errLocalFileChanged) {
+			logStructured("error", map[string]any{"type": "local_static_unavailable", "path": path, "err": err.Error()})
+			http.NotFound(w, r)
+			return
+		}
+		logStructured("error", map[string]any{"type": "local_static_error", "path": path, "err": err.Error()})
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		logStructured("error", map[string]any{"type": "local_static_stat", "path": path, "err": err.Error()})
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	http.ServeContent(w, r, filepath.Base(path), fi.ModTime(), f)
 }
 
 func setNoCacheHeaders(w http.ResponseWriter) {
@@ -258,16 +286,10 @@ func setNoCacheHeaders(w http.ResponseWriter) {
 	w.Header().Set("Expires", "0")
 }
 
-// serveFileNoConditional 以零修改时间返回文件，避免 If-Modified-Since 命中 304。
-func serveFileNoConditional(w http.ResponseWriter, r *http.Request, path string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	http.ServeContent(w, r, filepath.Base(path), time.Time{}, f)
-	return nil
+// serveFileHandle 以零修改时间返回已打开的文件，避免 If-Modified-Since 命中 304。
+// 文件在挑选阶段已成功打开，因此这里不存在 stat 后再被删除的竞态。
+func serveFileHandle(w http.ResponseWriter, r *http.Request, name string, f *os.File) {
+	http.ServeContent(w, r, name, time.Time{}, f)
 }
 
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {

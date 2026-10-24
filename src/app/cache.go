@@ -59,5 +59,13 @@ func SaveCache(cacheDir string, c *Cache) error {
 		return fmt.Errorf("序列化缓存失败: %w", err)
 	}
 	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o644)
+	// 先写临时文件再原子替换，避免并发/崩溃留下半截缓存；缓存可能含带签名参数的 URL，权限收紧。
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("写入缓存失败: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("替换缓存失败: %w", err)
+	}
+	return nil
 }
