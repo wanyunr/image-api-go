@@ -1,16 +1,12 @@
 package app
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -22,29 +18,6 @@ type ImageJSONResponse struct {
 	Height      int    `json:"height"`
 	Format      string `json:"format"`
 	Filename    string `json:"filename"`
-}
-
-type HealthResponse struct {
-	Status             string   `json:"status"`
-	Uptime             string   `json:"uptime"`
-	RequestsSinceStart int64    `json:"requests_since_start"`
-	Pool               PoolInfo `json:"pool"`
-}
-
-type PoolInfo struct {
-	Portrait  int  `json:"portrait"`
-	Landscape int  `json:"landscape"`
-	Total     int  `json:"total"`
-	Pending   *int `json:"pending,omitempty"`
-	Dead      *int `json:"dead,omitempty"`
-}
-
-type ReloadResponse struct {
-	Status    string `json:"status"`
-	Portrait  int    `json:"portrait"`
-	Landscape int    `json:"landscape"`
-	Pending   *int   `json:"pending,omitempty"`
-	Dead      *int   `json:"dead,omitempty"`
 }
 
 type Handler struct {
@@ -66,6 +39,20 @@ func NewHandler(cfg *Config, pool *URLPool, limiter *RateLimiter) *Handler {
 	}
 }
 
+// requestStatus 依次执行防盗链 → 鉴权 → 限流检查，返回应写入的状态码；0 表示放行。
+func (h *Handler) requestStatus(r *http.Request) int {
+	if !h.checkReferer(r) {
+		return http.StatusForbidden
+	}
+	if !h.checkAuth(r) {
+		return http.StatusUnauthorized
+	}
+	if !h.limiter.Allow() {
+		return http.StatusTooManyRequests
+	}
+	return 0
+}
+
 func (h *Handler) ServeImage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
@@ -81,17 +68,11 @@ func (h *Handler) ServeImage(w http.ResponseWriter, r *http.Request) {
 	h.totalReqs.Add(1)
 	logStructured("request", map[string]any{"ip": ip, "ua": ua, "query": sanitizeQuery(r.URL.RawQuery)})
 
-	if !h.checkReferer(r) {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
-	}
-	if !h.checkAuth(r) {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-	if !h.limiter.Allow() {
-		logStructured("rate_limit_hit", map[string]any{"ip": ip, "ua": ua, "query": sanitizeQuery(r.URL.RawQuery)})
-		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+	if code := h.requestStatus(r); code != 0 {
+		if code == http.StatusTooManyRequests {
+			logStructured("rate_limit_hit", map[string]any{"ip": ip, "ua": ua, "query": sanitizeQuery(r.URL.RawQuery)})
+		}
+		http.Error(w, http.StatusText(code), code)
 		return
 	}
 
@@ -102,12 +83,12 @@ func (h *Handler) ServeImage(w http.ResponseWriter, r *http.Request) {
 	if orientation == "" {
 		device := DetectDeviceType(ua)
 		if device == "mobile" {
-			orientation = "portrait"
+			orientation = OrientationPortrait
 		} else {
-			orientation = "landscape"
+			orientation = OrientationLandscape
 		}
 	}
-	if orientation != "portrait" && orientation != "landscape" {
+	if orientation != OrientationPortrait && orientation != OrientationLandscape {
 		http.Error(w, "Bad Request: orientation must be portrait or landscape", http.StatusBadRequest)
 		return
 	}
@@ -122,6 +103,9 @@ func (h *Handler) ServeImage(w http.ResponseWriter, r *http.Request) {
 		logStructured("error", map[string]any{"type": "local_format_unsupported", "format": format})
 		http.Error(w, "Bad Request: source=local only supports format=redirect", http.StatusBadRequest)
 		return
+	}
+	if format == "" {
+		format = "redirect"
 	}
 
 	img, localFile, err := h.pickImage(orientation)
@@ -142,21 +126,17 @@ func (h *Handler) ServeImage(w http.ResponseWriter, r *http.Request) {
 		defer localFile.Close()
 	}
 
-	effectiveFormat := format
-	if effectiveFormat == "" {
-		effectiveFormat = "redirect"
-	}
 	h.recent.Add(recentAccess{
 		URL:         img.URL,
 		Orientation: orientation,
-		Format:      effectiveFormat,
+		Format:      format,
 		At:          time.Now(),
 	})
 
 	switch format {
 	case "json":
 		info := img
-		if h.cfg.Server.MetadataMode == "on_request" || info.Width == 0 {
+		if h.cfg.Server.MetadataMode == MetadataModeOnRequest || info.Width == 0 {
 			info = FetchImageInfo(img.URL)
 		}
 		resp := ImageJSONResponse{
@@ -238,16 +218,8 @@ func (h *Handler) ServeLocal(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !h.checkReferer(r) {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
-	}
-	if !h.checkAuth(r) {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-	if !h.limiter.Allow() {
-		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+	if code := h.requestStatus(r); code != 0 {
+		http.Error(w, http.StatusText(code), code)
 		return
 	}
 
@@ -290,159 +262,4 @@ func setNoCacheHeaders(w http.ResponseWriter) {
 // 文件在挑选阶段已成功打开，因此这里不存在 stat 后再被删除的竞态。
 func serveFileHandle(w http.ResponseWriter, r *http.Request, name string, f *os.File) {
 	http.ServeContent(w, r, name, time.Time{}, f)
-}
-
-func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
-	portrait, landscape := h.pool.Count()
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	resp := HealthResponse{
-		Status:             "ok",
-		Uptime:             formatDuration(time.Since(h.startTime)),
-		RequestsSinceStart: h.totalReqs.Load(),
-		Pool: PoolInfo{
-			Portrait:  portrait,
-			Landscape: landscape,
-			Total:     portrait + landscape,
-		},
-	}
-	if h.cfg.Server.MetadataMode == "prefetch" {
-		p := h.pool.Pending()
-		d := h.pool.Dead()
-		resp.Pool.Pending = &p
-		resp.Pool.Dead = &d
-	}
-	json.NewEncoder(w).Encode(resp)
-}
-
-func (h *Handler) Reload(w http.ResponseWriter, r *http.Request) {
-	stats, err := h.pool.Load(h.cfg.URLs.Portrait, h.cfg.URLs.Landscape, h.cfg.Server.CacheDir, h.cfg.Source, h.cfg.Local, h.cfg.Server.BasePath)
-	if err != nil {
-		log.Printf("[reload failed] %v", err)
-		http.Error(w, "Reload Failed: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if h.cfg.Server.MetadataMode == "prefetch" {
-		go h.pool.RetryPending()
-		logStructured("reload", map[string]any{
-			"portrait": stats.Portrait, "landscape": stats.Landscape,
-			"pending": stats.Pending, "dead": stats.Dead,
-		})
-	} else {
-		logStructured("reload", map[string]any{
-			"portrait": stats.Portrait, "landscape": stats.Landscape,
-		})
-	}
-	if stats.Portrait == 0 || stats.Landscape == 0 {
-		log.Printf("[警告] reload 后存在空池: portrait=%d landscape=%d", stats.Portrait, stats.Landscape)
-	}
-
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	resp := ReloadResponse{
-		Status:    "reloaded",
-		Portrait:  stats.Portrait,
-		Landscape: stats.Landscape,
-	}
-	if h.cfg.Server.MetadataMode == "prefetch" {
-		resp.Pending = &stats.Pending
-		resp.Dead = &stats.Dead
-	}
-	json.NewEncoder(w).Encode(resp)
-}
-
-func (h *Handler) ClearDead(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	h.pool.ClearDead()
-	logStructured("clear_dead", map[string]any{})
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	json.NewEncoder(w).Encode(map[string]string{"status": "dead links cleared"})
-}
-
-// Recent 返回最近访问的图片记录（按时间倒序）。
-// 用于追溯刚访问过的图，避免喜欢的图找不到。
-func (h *Handler) Recent(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	items := h.recent.Recent(limit)
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	json.NewEncoder(w).Encode(map[string]any{
-		"total": h.recent.Size(),
-		"items": items,
-	})
-}
-
-func (h *Handler) checkAuth(r *http.Request) bool {
-	if !h.cfg.Auth.Enabled {
-		return true
-	}
-	token := extractToken(r)
-	for _, t := range h.cfg.Auth.Tokens {
-		if tokenMatches(token, t) {
-			return true
-		}
-	}
-	return false
-}
-
-func (h *Handler) checkAdminAuth(r *http.Request) bool {
-	token := extractToken(r)
-	if h.cfg.Auth.AdminToken != "" {
-		return tokenMatches(token, h.cfg.Auth.AdminToken)
-	}
-	if h.cfg.Auth.Enabled {
-		for _, t := range h.cfg.Auth.Tokens {
-			if tokenMatches(token, t) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func (h *Handler) AdminAuth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !h.checkAdminAuth(r) {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-func extractToken(r *http.Request) string {
-	token := r.URL.Query().Get("token")
-	if token == "" {
-		token = r.Header.Get("Authorization")
-		token = strings.TrimPrefix(token, "Bearer ")
-	}
-	return token
-}
-
-func tokenMatches(got, want string) bool {
-	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
-}
-
-func (h *Handler) checkReferer(r *http.Request) bool {
-	if !h.cfg.Referer.Enabled {
-		return true
-	}
-	referer := r.Header.Get("Referer")
-	if referer == "" {
-		return h.cfg.Referer.AllowEmpty
-	}
-	refererHost := extractHost(referer)
-	if refererHost == "" {
-		return h.cfg.Referer.AllowEmpty
-	}
-	for _, pattern := range h.cfg.Referer.Whitelist {
-		if matchReferer(refererHost, pattern) {
-			return true
-		}
-	}
-	return false
 }

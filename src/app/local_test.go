@@ -54,6 +54,19 @@ func setupLocalDirs(t *testing.T) (portraitDir, landscapeDir string) {
 	return portraitDir, landscapeDir
 }
 
+// newLocalTestConfig 构建 local 模式测试配置。
+// metadata_mode 保持默认的 on_request，避免测试触发网络探测。
+func newLocalTestConfig(portraitDirs, landscapeDirs []string) *Config {
+	cfg := DefaultConfig()
+	cfg.Source = SourceLocal
+	cfg.Local = LocalConfig{
+		PortraitDirs:  portraitDirs,
+		LandscapeDirs: landscapeDirs,
+		Extensions:    defaultLocalExtensions(),
+	}
+	return cfg
+}
+
 func TestLocalConfigValidate(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Source = SourceLocal
@@ -93,15 +106,11 @@ func TestLocalConfigValidate(t *testing.T) {
 func TestPoolLoadLocalServe(t *testing.T) {
 	portraitDir, landscapeDir := setupLocalDirs(t)
 
-	pool := NewURLPool()
-	pool.SetMetadataMode("on_request")
-	local := LocalConfig{
-		PortraitDirs:  []string{portraitDir},
-		LandscapeDirs: []string{landscapeDir},
-		Extensions:    defaultLocalExtensions(),
-	}
+	cfg := newLocalTestConfig([]string{portraitDir}, []string{landscapeDir})
+	cfg.Server.BasePath = "/api"
 
-	stats, err := pool.Load("", "", "", SourceLocal, local, "/api")
+	pool := NewURLPool()
+	stats, err := pool.Load(cfg)
 	if err != nil {
 		t.Fatalf("加载本地图片失败: %v", err)
 	}
@@ -142,15 +151,14 @@ func TestPoolLoadURLSource(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	pool := NewURLPool()
-	pool.SetMetadataMode("on_request")
-	local := LocalConfig{
-		PortraitDirs:  []string{portraitDir},
-		LandscapeDirs: []string{landscapeDir},
-		Extensions:    defaultLocalExtensions(),
-	}
+	// local 目录虽已配置，但 source=url 时不应被扫描。
+	cfg := newLocalTestConfig([]string{portraitDir}, []string{landscapeDir})
+	cfg.Source = SourceURL
+	cfg.URLs.Portrait = portraitFile
+	cfg.URLs.Landscape = landscapeFile
 
-	stats, err := pool.Load(portraitFile, landscapeFile, "", SourceURL, local, "")
+	pool := NewURLPool()
+	stats, err := pool.Load(cfg)
 	if err != nil {
 		t.Fatalf("URL 模式加载失败: %v", err)
 	}
@@ -169,14 +177,12 @@ func TestPrefetchCacheExcludesLocal(t *testing.T) {
 	portraitDir, landscapeDir := setupLocalDirs(t)
 	cacheDir := t.TempDir()
 
+	cfg := newLocalTestConfig([]string{portraitDir}, []string{landscapeDir})
+	cfg.Server.MetadataMode = MetadataModePrefetch
+	cfg.Server.CacheDir = cacheDir
+
 	pool := NewURLPool()
-	pool.SetMetadataMode("prefetch")
-	local := LocalConfig{
-		PortraitDirs:  []string{portraitDir},
-		LandscapeDirs: []string{landscapeDir},
-		Extensions:    defaultLocalExtensions(),
-	}
-	if _, err := pool.Load("", "", cacheDir, SourceLocal, local, ""); err != nil {
+	if _, err := pool.Load(cfg); err != nil {
 		t.Fatalf("加载失败: %v", err)
 	}
 
@@ -192,17 +198,10 @@ func TestPrefetchCacheExcludesLocal(t *testing.T) {
 func TestHandlerServesLocalImage(t *testing.T) {
 	portraitDir, landscapeDir := setupLocalDirs(t)
 
-	cfg := DefaultConfig()
-	cfg.Source = SourceLocal
-	cfg.Local = LocalConfig{
-		PortraitDirs:  []string{portraitDir},
-		LandscapeDirs: []string{landscapeDir},
-		Extensions:    defaultLocalExtensions(),
-	}
+	cfg := newLocalTestConfig([]string{portraitDir}, []string{landscapeDir})
 
 	pool := NewURLPool()
-	pool.SetMetadataMode("on_request")
-	if _, err := pool.Load("", "", "", cfg.Source, cfg.Local, ""); err != nil {
+	if _, err := pool.Load(cfg); err != nil {
 		t.Fatal(err)
 	}
 	h := NewHandler(cfg, pool, NewRateLimiter(cfg.RateLimit))
@@ -312,12 +311,9 @@ func TestScanLocalSkipsHiddenFiles(t *testing.T) {
 	writeTestPNG(t, filepath.Join(portraitDir, ".hidden.png"), 10, 10)
 	writeTestPNG(t, filepath.Join(portraitDir, ".thumbs", "inner.png"), 10, 10)
 
+	cfg := newLocalTestConfig([]string{portraitDir}, nil)
 	pool := NewURLPool()
-	pool.SetMetadataMode("on_request")
-	stats, err := pool.Load("", "", "", SourceLocal, LocalConfig{
-		PortraitDirs: []string{portraitDir},
-		Extensions:   defaultLocalExtensions(),
-	}, "")
+	stats, err := pool.Load(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +324,7 @@ func TestScanLocalSkipsHiddenFiles(t *testing.T) {
 		if strings.Contains(info.URL, ".hidden") || strings.Contains(info.URL, ".thumbs") {
 			t.Fatalf("隐藏文件进了池: %s", info.URL)
 		}
-		if _, ok := pool.LocalFile(strings.TrimPrefix(info.URL, "")); !ok {
+		if _, ok := pool.LocalFile(info.URL); !ok {
 			t.Fatalf("路由未登记: %s", info.URL)
 		}
 	}
@@ -338,13 +334,9 @@ func TestScanLocalDedupesAcrossOrientations(t *testing.T) {
 	dir := t.TempDir()
 	writeTestPNG(t, filepath.Join(dir, "shared.png"), 20, 10)
 
+	cfg := newLocalTestConfig([]string{dir}, []string{dir})
 	pool := NewURLPool()
-	pool.SetMetadataMode("on_request")
-	stats, err := pool.Load("", "", "", SourceLocal, LocalConfig{
-		PortraitDirs:  []string{dir},
-		LandscapeDirs: []string{dir},
-		Extensions:    defaultLocalExtensions(),
-	}, "")
+	stats, err := pool.Load(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,16 +351,9 @@ func TestServeLocalRejectsSymlinkSwap(t *testing.T) {
 	secret := filepath.Join(outside, "secret.png")
 	writeTestPNG(t, secret, 64, 64)
 
-	cfg := DefaultConfig()
-	cfg.Source = SourceLocal
-	cfg.Local = LocalConfig{
-		PortraitDirs:  []string{portraitDir},
-		LandscapeDirs: []string{landscapeDir},
-		Extensions:    defaultLocalExtensions(),
-	}
+	cfg := newLocalTestConfig([]string{portraitDir}, []string{landscapeDir})
 	pool := NewURLPool()
-	pool.SetMetadataMode("on_request")
-	if _, err := pool.Load("", "", "", cfg.Source, cfg.Local, ""); err != nil {
+	if _, err := pool.Load(cfg); err != nil {
 		t.Fatal(err)
 	}
 	h := NewHandler(cfg, pool, NewRateLimiter(cfg.RateLimit))
@@ -438,19 +423,18 @@ func TestPoolConcurrentLoadNoRace(t *testing.T) {
 	portraitDir, _ := setupLocalDirs(t)
 	cacheDir := filepath.Join(t.TempDir(), "cache")
 
+	cfg := newLocalTestConfig([]string{portraitDir}, nil)
+	cfg.Server.MetadataMode = MetadataModePrefetch
+	cfg.Server.CacheDir = cacheDir
+
 	pool := NewURLPool()
-	pool.SetMetadataMode("prefetch")
-	local := LocalConfig{
-		PortraitDirs: []string{portraitDir},
-		Extensions:   defaultLocalExtensions(),
-	}
 
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := pool.Load("", "", cacheDir, SourceLocal, local, ""); err != nil {
+			if _, err := pool.Load(cfg); err != nil {
 				t.Errorf("并发 Load 失败: %v", err)
 			}
 		}()
@@ -480,12 +464,9 @@ func TestScanLocalSkipsSymlinks(t *testing.T) {
 		t.Skipf("当前环境不支持符号链接: %v", err)
 	}
 
+	cfg := newLocalTestConfig([]string{portraitDir}, nil)
 	pool := NewURLPool()
-	pool.SetMetadataMode("on_request")
-	stats, err := pool.Load("", "", "", SourceLocal, LocalConfig{
-		PortraitDirs: []string{portraitDir},
-		Extensions:   defaultLocalExtensions(),
-	}, "")
+	stats, err := pool.Load(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -517,16 +498,9 @@ func TestHandlerLocalMissingFileRetriesDeterministic(t *testing.T) {
 		writeTestPNG(t, filepath.Join(portraitDir, name+".png"), 10, 20)
 	}
 
-	cfg := DefaultConfig()
-	cfg.Source = SourceLocal
-	cfg.Local = LocalConfig{
-		PortraitDirs: []string{portraitDir},
-		Extensions:   defaultLocalExtensions(),
-	}
-
+	cfg := newLocalTestConfig([]string{portraitDir}, nil)
 	pool := NewURLPool()
-	pool.SetMetadataMode("on_request")
-	if _, err := pool.Load("", "", "", cfg.Source, cfg.Local, ""); err != nil {
+	if _, err := pool.Load(cfg); err != nil {
 		t.Fatal(err)
 	}
 	h := NewHandler(cfg, pool, NewRateLimiter(cfg.RateLimit))
@@ -550,17 +524,9 @@ func TestHandlerLocalMissingFileRetriesDeterministic(t *testing.T) {
 func TestHandlerLocalMissingFile(t *testing.T) {
 	portraitDir, landscapeDir := setupLocalDirs(t)
 
-	cfg := DefaultConfig()
-	cfg.Source = SourceLocal
-	cfg.Local = LocalConfig{
-		PortraitDirs:  []string{portraitDir},
-		LandscapeDirs: []string{landscapeDir},
-		Extensions:    defaultLocalExtensions(),
-	}
-
+	cfg := newLocalTestConfig([]string{portraitDir}, []string{landscapeDir})
 	pool := NewURLPool()
-	pool.SetMetadataMode("on_request")
-	if _, err := pool.Load("", "", "", cfg.Source, cfg.Local, ""); err != nil {
+	if _, err := pool.Load(cfg); err != nil {
 		t.Fatal(err)
 	}
 	h := NewHandler(cfg, pool, NewRateLimiter(cfg.RateLimit))
@@ -593,17 +559,9 @@ func TestHandlerLocalMissingFile(t *testing.T) {
 func TestHandlerLocalRejectsLinkFormats(t *testing.T) {
 	portraitDir, landscapeDir := setupLocalDirs(t)
 
-	cfg := DefaultConfig()
-	cfg.Source = SourceLocal
-	cfg.Local = LocalConfig{
-		PortraitDirs:  []string{portraitDir},
-		LandscapeDirs: []string{landscapeDir},
-		Extensions:    defaultLocalExtensions(),
-	}
-
+	cfg := newLocalTestConfig([]string{portraitDir}, []string{landscapeDir})
 	pool := NewURLPool()
-	pool.SetMetadataMode("on_request")
-	if _, err := pool.Load("", "", "", cfg.Source, cfg.Local, ""); err != nil {
+	if _, err := pool.Load(cfg); err != nil {
 		t.Fatal(err)
 	}
 	h := NewHandler(cfg, pool, NewRateLimiter(cfg.RateLimit))

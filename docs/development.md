@@ -44,13 +44,21 @@ go test -race ./...
 | 目录/文件 | 说明 |
 |---|---|
 | src/main.go | 服务入口，启动 HTTP Server |
-| src/app/handler.go | HTTP 请求处理、路由逻辑 |
-| src/app/pool.go | URL 池、metadata 预取与后台补抓 |
-| src/app/config.go | 配置加载与校验 |
+| src/app/router.go | HTTP 路由组装（含 base_path 挂载） |
+| src/app/handler.go | 随机图片与本地静态访问处理 |
+| src/app/admin.go | 健康检查与管理端点 |
+| src/app/auth.go | Token 鉴权与防盗链 |
+| src/app/pool.go | URL 池核心、metadata 预取与后台补抓 |
+| src/app/urllist.go | URL 列表文件读取与去重 |
+| src/app/localscan.go | 本地图片目录扫描与路由生成 |
+| src/app/localfile.go | 本地文件安全打开（防符号链接替换） |
+| src/app/config.go | 配置加载、默认值与校验 |
 | src/app/cache.go | metadata 缓存持久化 |
 | src/app/ratelimit.go | 全局限流 |
 | src/app/imageinfo.go | 图片元数据探测 |
 | src/app/recent.go | 最近访问追溯 |
+| src/app/logging.go | 结构化日志与脱敏 |
+| src/app/util.go | HTTP/格式化通用工具 |
 
 ## 本地图源（source: local）流程
 

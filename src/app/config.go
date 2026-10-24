@@ -9,9 +9,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// source 取值。
 const (
 	SourceLocal = "local"
 	SourceURL   = "url"
+)
+
+// server.metadata_mode 取值。
+const (
+	MetadataModePrefetch  = "prefetch"
+	MetadataModeOnRequest = "on_request"
 )
 
 type Config struct {
@@ -50,6 +57,12 @@ func (c *Config) UsesLocal() bool {
 
 func (c *Config) UsesURL() bool {
 	return c.Source == SourceURL
+}
+
+// PrefetchEnabled 表示 metadata 预取模式是否开启。
+// Validate 会把空 metadata_mode 规范化为 on_request，经校验的配置可安全使用。
+func (c *Config) PrefetchEnabled() bool {
+	return c.Server.MetadataMode == MetadataModePrefetch
 }
 
 type AuthConfig struct {
@@ -108,7 +121,7 @@ func DefaultConfig() *Config {
 			Host:         "0.0.0.0",
 			Port:         28085,
 			CacheDir:     "cache",
-			MetadataMode: "on_request",
+			MetadataMode: MetadataModeOnRequest,
 		},
 		URLs: URLsConfig{
 			Portrait:  "urls/portrait.txt",
@@ -158,24 +171,35 @@ func createDefaultConfig(path string) error {
 	return os.WriteFile(path, append(defaultHeader, data...), 0o644)
 }
 
+// Validate 先补齐默认值再逐项校验，任何一项不合法即返回错误。
 func (c *Config) Validate() error {
+	c.applyDefaults()
+	return c.check()
+}
+
+// applyDefaults 就地补齐缺省字段，保证校验与后续使用看到的是规范化配置。
+func (c *Config) applyDefaults() {
 	if c.Source == "" {
 		// 兼容旧配置：未声明 source 时保持 URL 列表模式，与升级前行为一致。
 		c.Source = SourceURL
 	}
+	if c.Server.MetadataMode == "" {
+		c.Server.MetadataMode = MetadataModeOnRequest
+	}
+	c.Local.normalizeExtensions()
+}
+
+func (c *Config) check() error {
 	if c.Source != SourceLocal && c.Source != SourceURL {
 		return fmt.Errorf("source 必须是 local 或 url，当前值: %q", c.Source)
 	}
 	if c.Server.Port <= 0 || c.Server.Port > 65535 {
 		return fmt.Errorf("server.port 必须在 1-65535 之间，当前值: %d", c.Server.Port)
 	}
-	if c.Server.MetadataMode == "" {
-		c.Server.MetadataMode = "on_request"
-	}
-	if c.Server.MetadataMode != "prefetch" && c.Server.MetadataMode != "on_request" {
+	if c.Server.MetadataMode != MetadataModePrefetch && c.Server.MetadataMode != MetadataModeOnRequest {
 		return fmt.Errorf("server.metadata_mode 必须是 prefetch 或 on_request，当前值: %q", c.Server.MetadataMode)
 	}
-	if c.Server.MetadataMode == "prefetch" && c.Server.CacheDir == "" {
+	if c.Server.MetadataMode == MetadataModePrefetch && c.Server.CacheDir == "" {
 		return fmt.Errorf("prefetch 模式下 server.cache_dir 不能为空")
 	}
 	if c.Server.BasePath != "" && c.Server.BasePath != "/" {
@@ -218,9 +242,11 @@ func defaultLocalExtensions() []string {
 	return []string{".jpg", ".jpeg", ".png", ".webp", ".gif"}
 }
 
-func (l *LocalConfig) validate(source string) error {
+// normalizeExtensions 扩展名缺省时补默认列表，否则统一为小写并补齐前导点。
+func (l *LocalConfig) normalizeExtensions() {
 	if len(l.Extensions) == 0 {
 		l.Extensions = defaultLocalExtensions()
+		return
 	}
 	for i, ext := range l.Extensions {
 		ext = strings.ToLower(strings.TrimSpace(ext))
@@ -229,6 +255,9 @@ func (l *LocalConfig) validate(source string) error {
 		}
 		l.Extensions[i] = ext
 	}
+}
+
+func (l *LocalConfig) validate(source string) error {
 	if source == SourceLocal && len(l.PortraitDirs) == 0 && len(l.LandscapeDirs) == 0 {
 		return fmt.Errorf("source 为 local 时，至少需要配置一个 local.portrait_dirs 或 local.landscape_dirs")
 	}

@@ -5,6 +5,25 @@ import (
 	"time"
 )
 
+// fixedWindow 单个固定窗口计数器：到期重置，额度（limit>0 时）用尽即拒绝。
+type fixedWindow struct {
+	limit int
+	span  time.Duration
+	count int
+	start time.Time
+}
+
+func (w *fixedWindow) resetIfExpired(now time.Time) {
+	if now.Sub(w.start) >= w.span {
+		w.count = 0
+		w.start = now
+	}
+}
+
+func (w *fixedWindow) exhausted() bool {
+	return w.limit > 0 && w.count >= w.limit
+}
+
 // RateLimiter 全局限流器。
 //
 // 设计说明：限流按整个服务所有请求的合计值计算（而非按 IP 分桶），
@@ -12,28 +31,18 @@ import (
 type RateLimiter struct {
 	mu      sync.Mutex
 	enabled bool
-	perMin  int
-	perHour int
-	perDay  int
-
-	minuteCount int
-	minuteStart time.Time
-	hourCount   int
-	hourStart   time.Time
-	dayCount    int
-	dayStart    time.Time
+	minute  fixedWindow
+	hour    fixedWindow
+	day     fixedWindow
 }
 
 func NewRateLimiter(cfg RateLimitConfig) *RateLimiter {
 	now := time.Now()
 	return &RateLimiter{
-		enabled:     cfg.Enabled,
-		perMin:      cfg.PerMinute,
-		perHour:     cfg.PerHour,
-		perDay:      cfg.PerDay,
-		minuteStart: now,
-		hourStart:   now,
-		dayStart:    now,
+		enabled: cfg.Enabled,
+		minute:  fixedWindow{limit: cfg.PerMinute, span: time.Minute, start: now},
+		hour:    fixedWindow{limit: cfg.PerHour, span: time.Hour, start: now},
+		day:     fixedWindow{limit: cfg.PerDay, span: 24 * time.Hour, start: now},
 	}
 }
 
@@ -47,36 +56,18 @@ func (rl *RateLimiter) Allow() bool {
 	defer rl.mu.Unlock()
 
 	now := time.Now()
+	windows := []*fixedWindow{&rl.minute, &rl.hour, &rl.day}
 
-	// 重置过期窗口
-	if now.Sub(rl.minuteStart) >= time.Minute {
-		rl.minuteCount = 0
-		rl.minuteStart = now
+	for _, w := range windows {
+		w.resetIfExpired(now)
 	}
-	if now.Sub(rl.hourStart) >= time.Hour {
-		rl.hourCount = 0
-		rl.hourStart = now
+	for _, w := range windows {
+		if w.exhausted() {
+			return false
+		}
 	}
-	if now.Sub(rl.dayStart) >= 24*time.Hour {
-		rl.dayCount = 0
-		rl.dayStart = now
+	for _, w := range windows {
+		w.count++
 	}
-
-	// 检查限制
-	if rl.perMin > 0 && rl.minuteCount >= rl.perMin {
-		return false
-	}
-	if rl.perHour > 0 && rl.hourCount >= rl.perHour {
-		return false
-	}
-	if rl.perDay > 0 && rl.dayCount >= rl.perDay {
-		return false
-	}
-
-	// 计数
-	rl.minuteCount++
-	rl.hourCount++
-	rl.dayCount++
-
 	return true
 }

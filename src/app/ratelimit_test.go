@@ -49,7 +49,7 @@ func TestRateLimiter_WindowReset(t *testing.T) {
 
 	// 模拟一分钟窗口过期
 	rl.mu.Lock()
-	rl.minuteStart = time.Now().Add(-time.Minute)
+	rl.minute.start = time.Now().Add(-time.Minute)
 	rl.mu.Unlock()
 
 	if !rl.Allow() {
@@ -77,8 +77,8 @@ func TestRateLimiter_HourAndDayLimits(t *testing.T) {
 
 	// 模拟一小时窗口过期（分钟窗口同步过期，重置分钟计数）
 	rl.mu.Lock()
-	rl.minuteStart = time.Now().Add(-time.Minute)
-	rl.hourStart = time.Now().Add(-time.Hour)
+	rl.minute.start = time.Now().Add(-time.Minute)
+	rl.hour.start = time.Now().Add(-time.Hour)
 	rl.mu.Unlock()
 
 	for i := 0; i < 5; i++ {
@@ -92,9 +92,9 @@ func TestRateLimiter_HourAndDayLimits(t *testing.T) {
 
 	// 模拟一天窗口过期（累计已消费 10 个 = 达到每日额度上限，重置后放行）
 	rl.mu.Lock()
-	rl.minuteStart = time.Now().Add(-time.Minute)
-	rl.hourStart = time.Now().Add(-time.Hour)
-	rl.dayStart = time.Now().Add(-25 * time.Hour)
+	rl.minute.start = time.Now().Add(-time.Minute)
+	rl.hour.start = time.Now().Add(-time.Hour)
+	rl.day.start = time.Now().Add(-25 * time.Hour)
 	rl.mu.Unlock()
 
 	if !rl.Allow() {

@@ -1,13 +1,10 @@
 package app
 
 import (
-	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"time"
 )
@@ -43,28 +40,6 @@ func DetectDeviceType(ua string) string {
 	}
 }
 
-// extractHost 从 URL 中提取 host（去掉端口与路径，正确处理 IPv6 与用户信息）
-func extractHost(rawURL string) string {
-	u, err := url.Parse(rawURL)
-	if err != nil || u.Host == "" {
-		return ""
-	}
-	return strings.ToLower(u.Hostname())
-}
-
-// matchReferer 匹配 Referer host 与白名单模式
-func matchReferer(host, pattern string) bool {
-	pattern = strings.ToLower(pattern)
-
-	// 通配符匹配 *.example.com
-	if strings.HasPrefix(pattern, "*.") {
-		suffix := pattern[1:] // ".example.com"
-		return strings.HasSuffix(host, suffix) || host == pattern[2:]
-	}
-
-	return host == pattern
-}
-
 // filenameFromURL 从 URL 中提取文件名
 func filenameFromURL(rawURL string) string {
 	s := rawURL
@@ -97,28 +72,4 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dm %ds", minutes, seconds)
 	}
 	return fmt.Sprintf("%ds", seconds)
-}
-
-// tokenQueryRe 匹配 query 串中的 token 参数（大小写不敏感，含 & 连接符场景），用于日志脱敏
-var tokenQueryRe = regexp.MustCompile(`(?i)(^|&)token=[^&]*`)
-
-// logStructured 输出 JSON 格式的结构化日志。
-func logStructured(event string, fields map[string]any) {
-	m := make(map[string]any, len(fields)+2)
-	m["event"] = event
-	m["ts"] = time.Now().UTC().Format(time.RFC3339)
-	for k, v := range fields {
-		m[k] = v
-	}
-	b, _ := json.Marshal(m)
-	log.Println(string(b))
-}
-
-// sanitizeQuery 对 query 串做脱敏：将 token 参数值替换为 ***，避免敏感信息进入日志。
-// 非法参数（如未编码的 % 序列）原样保留，不做二次解析，防止误改。
-func sanitizeQuery(raw string) string {
-	if raw == "" || !strings.Contains(strings.ToLower(raw), "token") {
-		return raw
-	}
-	return tokenQueryRe.ReplaceAllString(raw, "${1}token=***")
 }

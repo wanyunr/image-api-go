@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -37,15 +36,14 @@ func main() {
 	log.Printf("[配置] 加载成功: %s", cfgPath)
 
 	pool := app.NewURLPool()
-	pool.SetMetadataMode(cfg.Server.MetadataMode)
-	stats, err := pool.Load(cfg.URLs.Portrait, cfg.URLs.Landscape, cfg.Server.CacheDir, cfg.Source, cfg.Local, cfg.Server.BasePath)
+	stats, err := pool.Load(cfg)
 	if err != nil {
 		log.Fatalf("[启动失败] %v", err)
 	}
 	if stats.CreatedFiles {
 		log.Printf("[URL池] 默认 URL 列表已生成: %s, %s", cfg.URLs.Portrait, cfg.URLs.Landscape)
 	}
-	if cfg.Server.MetadataMode == "prefetch" {
+	if cfg.PrefetchEnabled() {
 		log.Printf("[URL池] portrait=%d landscape=%d pending=%d dead=%d", stats.Portrait, stats.Landscape, stats.Pending, stats.Dead)
 	} else {
 		log.Printf("[URL池] portrait=%d landscape=%d", stats.Portrait, stats.Landscape)
@@ -55,37 +53,19 @@ func main() {
 		log.Printf("[本地图片] portrait=%d landscape=%d", stats.LocalPortrait, stats.LocalLandscape)
 	}
 	if stats.Portrait == 0 {
-		log.Printf("[警告] portrait 池为空，请检查 %s", poolHint(cfg, "portrait"))
+		log.Printf("[警告] portrait 池为空，请检查 %s", poolHint(cfg, app.OrientationPortrait))
 	}
 	if stats.Landscape == 0 {
-		log.Printf("[警告] landscape 池为空，请检查 %s", poolHint(cfg, "landscape"))
+		log.Printf("[警告] landscape 池为空，请检查 %s", poolHint(cfg, app.OrientationLandscape))
 	}
 
 	limiter := app.NewRateLimiter(cfg.RateLimit)
 	handler := app.NewHandler(cfg, pool, limiter)
 
-	mux := http.NewServeMux()
-	target := mux
-	if bp := strings.TrimRight(cfg.Server.BasePath, "/"); bp != "" {
-		sub := http.NewServeMux()
-		mux.Handle(bp+"/", http.StripPrefix(bp, sub))
-		target = sub
-	}
-	target.HandleFunc("/", handler.ServeImage)
-	target.HandleFunc("/health", handler.Health)
-	if cfg.UsesLocal() {
-		target.HandleFunc("/local/", handler.ServeLocal)
-	}
-	adminMux := http.NewServeMux()
-	adminMux.HandleFunc("/admin/reload", handler.Reload)
-	adminMux.HandleFunc("/admin/clear-dead", handler.ClearDead)
-	adminMux.HandleFunc("/admin/recent", handler.Recent)
-	target.Handle("/admin/", handler.AdminAuth(adminMux))
-
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           app.NewRouter(cfg, handler),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      20 * time.Second,
@@ -104,14 +84,14 @@ func main() {
 		log.Printf("[路径前缀] base_path=%s", cfg.Server.BasePath)
 	}
 
-	if cfg.Server.MetadataMode == "prefetch" {
+	if cfg.PrefetchEnabled() {
 		go pool.RetryPending()
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if cfg.Server.MetadataMode == "prefetch" {
+	if cfg.PrefetchEnabled() {
 		go pool.MetadataWorker(ctx.Done())
 	}
 
@@ -137,12 +117,12 @@ func main() {
 // poolHint 给空池告警指明该检查哪一处配置。
 func poolHint(cfg *app.Config, orientation string) string {
 	if cfg.UsesLocal() {
-		if orientation == "portrait" {
+		if orientation == app.OrientationPortrait {
 			return fmt.Sprintf("local.portrait_dirs %v", cfg.Local.PortraitDirs)
 		}
 		return fmt.Sprintf("local.landscape_dirs %v", cfg.Local.LandscapeDirs)
 	}
-	if orientation == "portrait" {
+	if orientation == app.OrientationPortrait {
 		return cfg.URLs.Portrait
 	}
 	return cfg.URLs.Landscape

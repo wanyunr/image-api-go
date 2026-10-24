@@ -1,19 +1,11 @@
 package app
 
 import (
-	"bufio"
 	cryptoRand "crypto/rand"
-	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"io/fs"
 	"math/rand"
-	"net/url"
-	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,6 +15,12 @@ var ErrPoolEmpty = errors.New("URL pool is empty")
 
 // ErrLocalImageMissing 表示本地图源里的文件在扫描后已不存在（被删除或移动）。
 var ErrLocalImageMissing = errors.New("local image file is missing")
+
+// orientation 取值。
+const (
+	OrientationPortrait  = "portrait"
+	OrientationLandscape = "landscape"
+)
 
 const (
 	metadataFetchConcurrency = 1
@@ -50,18 +48,25 @@ type PoolSnapshot struct {
 	LocalFiles map[string]string
 }
 
+// clone 返回字段级复制的快照副本。切片与映射仍共享底层数据：
+// 需要修改切片内容的一方必须自行复制底层数组，只替换字段是安全的。
+func (s *PoolSnapshot) clone() *PoolSnapshot {
+	cp := *s
+	return &cp
+}
+
 // URLPool 通过 atomic.Pointer 提供无锁读取。
 // 热路径（Random/Count）使用 atomic.Load，低开销。
 // 变更操作（Load/retryPending/ClearDead）通过 mu 串行化，保证原子替换。
 type URLPool struct {
-	current      atomic.Pointer[PoolSnapshot]
-	mu           sync.Mutex
-	loadMu       sync.Mutex // 串行化 Load，避免并发 reload 交错构建
-	cacheMu      sync.Mutex // 串行化缓存落盘
-	cacheDir     string
-	metadataMode string
-	rng          *rand.Rand
-	rngMu        sync.Mutex
+	current  atomic.Pointer[PoolSnapshot]
+	mu       sync.Mutex
+	loadMu   sync.Mutex // 串行化 Load，避免并发 reload 交错构建
+	cacheMu  sync.Mutex // 串行化缓存落盘
+	prefetch bool
+	cacheDir string
+	rng      *rand.Rand
+	rngMu    sync.Mutex
 }
 
 type LoadStats struct {
@@ -75,18 +80,9 @@ type LoadStats struct {
 }
 
 func NewURLPool() *URLPool {
-	p := &URLPool{rng: newRandGenerator(), metadataMode: "prefetch"}
+	p := &URLPool{rng: newRandGenerator()}
 	p.current.Store(&PoolSnapshot{})
 	return p
-}
-
-func (p *URLPool) SetMetadataMode(mode string) {
-	if mode == "" {
-		mode = "prefetch"
-	}
-	p.mu.Lock()
-	p.metadataMode = mode
-	p.mu.Unlock()
 }
 
 func newRandGenerator() *rand.Rand {
@@ -102,21 +98,27 @@ func newRandGenerator() *rand.Rand {
 
 // Load 完整构建新 Snapshot 后原子替换。
 // 先读文件 → 扫描本地目录 → 构建 pool → 构建 metadata → 一切就绪 → 原子 swap。
-func (p *URLPool) Load(portraitFile, landscapeFile, cacheDir, source string, local LocalConfig, basePath string) (LoadStats, error) {
+func (p *URLPool) Load(cfg *Config) (LoadStats, error) {
 	p.loadMu.Lock()
 	defer p.loadMu.Unlock()
+
+	// 兼容未走 Validate 的调用方：空 metadata_mode 按默认的 prefetch 处理。
+	mode := cfg.Server.MetadataMode
+	if mode == "" {
+		mode = MetadataModePrefetch
+	}
 
 	var portraitURLs, landscapeURLs []string
 	var createdPortrait, createdLandscape bool
 	var err error
 
-	useLocal := source != SourceURL
+	useLocal := cfg.Source != SourceURL
 	if !useLocal {
-		portraitURLs, createdPortrait, err = loadOrCreate(portraitFile, "# portrait URL list\n# Add one image URL per line\n", "竖屏")
+		portraitURLs, createdPortrait, err = loadOrCreate(cfg.URLs.Portrait, "# portrait URL list\n# Add one image URL per line\n", "竖屏")
 		if err != nil {
 			return LoadStats{}, err
 		}
-		landscapeURLs, createdLandscape, err = loadOrCreate(landscapeFile, "# landscape URL list\n# Add one image URL per line\n", "横屏")
+		landscapeURLs, createdLandscape, err = loadOrCreate(cfg.URLs.Landscape, "# landscape URL list\n# Add one image URL per line\n", "横屏")
 		if err != nil {
 			return LoadStats{}, err
 		}
@@ -128,14 +130,15 @@ func (p *URLPool) Load(portraitFile, landscapeFile, cacheDir, source string, loc
 	var localPortrait, localLandscape []ImageInfo
 	var localFiles map[string]string
 	if useLocal {
-		localPortrait, localLandscape, localFiles, err = scanLocalImages(local, basePath)
+		localPortrait, localLandscape, localFiles, err = scanLocalImages(cfg.Local, cfg.Server.BasePath)
 		if err != nil {
 			return LoadStats{}, err
 		}
 	}
 
 	p.mu.Lock()
-	p.cacheDir = cacheDir
+	p.prefetch = mode == MetadataModePrefetch
+	p.cacheDir = cfg.Server.CacheDir
 	p.mu.Unlock()
 
 	stats := LoadStats{
@@ -144,7 +147,7 @@ func (p *URLPool) Load(portraitFile, landscapeFile, cacheDir, source string, loc
 		LocalLandscape: len(localLandscape),
 	}
 
-	if p.metadataMode == "on_request" {
+	if mode == MetadataModeOnRequest {
 		snapshot := &PoolSnapshot{
 			Portrait:   append(makeInfos(portraitURLs), localPortrait...),
 			Landscape:  append(makeInfos(landscapeURLs), localLandscape...),
@@ -158,7 +161,7 @@ func (p *URLPool) Load(portraitFile, landscapeFile, cacheDir, source string, loc
 		return stats, nil
 	}
 
-	cache, _ := LoadCache(cacheDir)
+	cache, _ := LoadCache(cfg.Server.CacheDir)
 	if cache == nil {
 		cache = &Cache{Version: cacheVersion}
 	}
@@ -171,8 +174,8 @@ func (p *URLPool) Load(portraitFile, landscapeFile, cacheDir, source string, loc
 		cacheL[info.URL] = info
 	}
 
-	portrait, retryP := buildWithCache(portraitURLs, cacheP, "portrait")
-	landscape, retryL := buildWithCache(landscapeURLs, cacheL, "landscape")
+	portrait, retryP := buildWithCache(portraitURLs, cacheP, OrientationPortrait)
+	landscape, retryL := buildWithCache(landscapeURLs, cacheL, OrientationLandscape)
 
 	portrait = append(portrait, localPortrait...)
 	landscape = append(landscape, localLandscape...)
@@ -233,15 +236,11 @@ func (p *URLPool) MetadataWorker(done <-chan struct{}) {
 
 func (p *URLPool) retryPending() {
 	p.mu.Lock()
-	snapshot := p.current.Load()
-	items := snapshot.Retry
+	items := p.current.Load().Retry
 	// 清空当前 retry，避免重入重复抓取
-	p.current.Store(&PoolSnapshot{
-		Portrait:   snapshot.Portrait,
-		Landscape:  snapshot.Landscape,
-		Dead:       snapshot.Dead,
-		LocalFiles: snapshot.LocalFiles,
-	})
+	snapshot := p.current.Load().clone()
+	snapshot.Retry = nil
+	p.current.Store(snapshot)
 	p.mu.Unlock()
 
 	if len(items) == 0 {
@@ -284,22 +283,12 @@ func (p *URLPool) retryPending() {
 
 	// 构建新 snapshot（含 Reload 期间可能新增的 retry 项）
 	p.mu.Lock()
-	snapshot = p.current.Load()
-	newPortrait := applyUpdates(snapshot.Portrait, added, "portrait")
-	newLandscape := applyUpdates(snapshot.Landscape, added, "landscape")
-	newDead := make([]DeadItem, 0, len(snapshot.Dead)+len(newlyDead))
-	newDead = append(newDead, snapshot.Dead...)
-	newDead = append(newDead, newlyDead...)
-	newRetry := make([]pendingItem, 0, len(snapshot.Retry)+len(still))
-	newRetry = append(newRetry, snapshot.Retry...)
-	newRetry = append(newRetry, still...)
-	p.current.Store(&PoolSnapshot{
-		Portrait:   newPortrait,
-		Landscape:  newLandscape,
-		Retry:      newRetry,
-		Dead:       newDead,
-		LocalFiles: snapshot.LocalFiles,
-	})
+	snapshot = p.current.Load().clone()
+	snapshot.Portrait = applyUpdates(snapshot.Portrait, added, OrientationPortrait)
+	snapshot.Landscape = applyUpdates(snapshot.Landscape, added, OrientationLandscape)
+	snapshot.Dead = append(append([]DeadItem(nil), snapshot.Dead...), newlyDead...)
+	snapshot.Retry = append(append([]pendingItem(nil), snapshot.Retry...), still...)
+	p.current.Store(snapshot)
 	p.mu.Unlock()
 
 	if len(added) > 0 || len(newlyDead) > 0 {
@@ -329,16 +318,39 @@ func applyUpdates(pool []ImageInfo, updates []metaUpdate, orientation string) []
 }
 
 func (p *URLPool) Random(orientation string) (ImageInfo, error) {
-	snapshot := p.current.Load()
+	return p.randomFrom(p.current.Load(), orientation, nil)
+}
 
+// RandomExcluding 在不含 exclude 的候选中随机取一张（不放回抽样）。
+// 用于本地文件失效后的重选：既保证循环有限次结束，又保证只要还有可用
+// 候选就一定能抽到。候选耗尽时返回 ErrPoolEmpty。
+func (p *URLPool) RandomExcluding(orientation string, exclude map[string]struct{}) (ImageInfo, error) {
+	return p.randomFrom(p.current.Load(), orientation, exclude)
+}
+
+func (p *URLPool) randomFrom(snapshot *PoolSnapshot, orientation string, exclude map[string]struct{}) (ImageInfo, error) {
 	var pool []ImageInfo
 	switch orientation {
-	case "portrait":
+	case OrientationPortrait:
 		pool = snapshot.Portrait
-	case "landscape":
+	case OrientationLandscape:
 		pool = snapshot.Landscape
 	default:
 		return ImageInfo{}, fmt.Errorf("无效的 orientation: %s", orientation)
+	}
+
+	// 本地路径在排除表中候选被跳过；远程 URL 不受排除表影响。
+	if len(exclude) > 0 {
+		candidates := make([]ImageInfo, 0, len(pool))
+		for _, img := range pool {
+			if img.LocalPath != "" {
+				if _, skip := exclude[img.LocalPath]; skip {
+					continue
+				}
+			}
+			candidates = append(candidates, img)
+		}
+		pool = candidates
 	}
 
 	if len(pool) == 0 {
@@ -349,41 +361,6 @@ func (p *URLPool) Random(orientation string) (ImageInfo, error) {
 	idx := p.rng.Intn(len(pool))
 	p.rngMu.Unlock()
 	return pool[idx], nil
-}
-
-// RandomExcluding 在不含 exclude 的候选中随机取一张（不放回抽样）。
-// 用于本地文件失效后的重选：既保证循环有限次结束，又保证只要还有可用
-// 候选就一定能抽到。候选耗尽时返回 ErrPoolEmpty。
-func (p *URLPool) RandomExcluding(orientation string, exclude map[string]struct{}) (ImageInfo, error) {
-	snapshot := p.current.Load()
-
-	var pool []ImageInfo
-	switch orientation {
-	case "portrait":
-		pool = snapshot.Portrait
-	case "landscape":
-		pool = snapshot.Landscape
-	default:
-		return ImageInfo{}, fmt.Errorf("无效的 orientation: %s", orientation)
-	}
-
-	candidates := make([]ImageInfo, 0, len(pool))
-	for _, img := range pool {
-		if img.LocalPath != "" {
-			if _, skip := exclude[img.LocalPath]; skip {
-				continue
-			}
-		}
-		candidates = append(candidates, img)
-	}
-	if len(candidates) == 0 {
-		return ImageInfo{}, fmt.Errorf("%w: %s", ErrPoolEmpty, orientation)
-	}
-
-	p.rngMu.Lock()
-	idx := p.rng.Intn(len(candidates))
-	p.rngMu.Unlock()
-	return candidates[idx], nil
 }
 
 func (p *URLPool) Count() (portrait, landscape int) {
@@ -407,22 +384,18 @@ func (p *URLPool) LocalFile(routePath string) (string, bool) {
 
 func (p *URLPool) ClearDead() {
 	p.mu.Lock()
-	s := p.current.Load()
-	p.current.Store(&PoolSnapshot{
-		Portrait:   s.Portrait,
-		Landscape:  s.Landscape,
-		Retry:      s.Retry,
-		LocalFiles: s.LocalFiles,
-	})
+	s := p.current.Load().clone()
+	s.Dead = nil
+	p.current.Store(s)
 	p.mu.Unlock()
 	_ = p.saveCache()
 }
 
 func (p *URLPool) saveCache() error {
 	p.mu.Lock()
-	mode, dir := p.metadataMode, p.cacheDir
+	prefetch, dir := p.prefetch, p.cacheDir
 	p.mu.Unlock()
-	if mode != "prefetch" || dir == "" {
+	if !prefetch || dir == "" {
 		return nil
 	}
 
@@ -452,82 +425,6 @@ func buildWithCache(urls []string, cacheMap map[string]ImageInfo, orientation st
 	return pool, retry
 }
 
-func makeInfos(urls []string) []ImageInfo {
-	infos := make([]ImageInfo, len(urls))
-	for i, u := range urls {
-		infos[i] = ImageInfo{URL: u}
-	}
-	return infos
-}
-
-func loadOrCreate(path, defaultContent, name string) ([]string, bool, error) {
-	urls, err := loadURLFile(path)
-	if err == nil {
-		return urls, false, nil
-	}
-	if !os.IsNotExist(err) {
-		return nil, false, fmt.Errorf("加载%s URL 列表失败: %w", name, err)
-	}
-	if err := createDefaultURLFile(path, defaultContent); err != nil {
-		return nil, false, fmt.Errorf("创建默认%s URL 列表失败: %w", name, err)
-	}
-	urls, err = loadURLFile(path)
-	if err != nil {
-		return nil, false, fmt.Errorf("加载%s URL 列表失败: %w", name, err)
-	}
-	return urls, true, nil
-}
-
-func createDefaultURLFile(path, content string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, []byte(content), 0o644)
-}
-
-func dedupe(urls []string) []string {
-	seen := make(map[string]struct{}, len(urls))
-	out := make([]string, 0, len(urls))
-	for _, u := range urls {
-		if _, ok := seen[u]; ok {
-			continue
-		}
-		seen[u] = struct{}{}
-		out = append(out, u)
-	}
-	return out
-}
-
-func loadURLFile(path string) ([]string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	var urls []string
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if !isValidURL(line) {
-			continue
-		}
-		urls = append(urls, line)
-	}
-	return urls, scanner.Err()
-}
-
-func isValidURL(s string) bool {
-	u, err := url.ParseRequestURI(s)
-	if err != nil {
-		return false
-	}
-	return u.Scheme == "http" || u.Scheme == "https"
-}
-
 // remoteInfos 过滤掉本地图片，缓存只持久化远程 URL。
 func remoteInfos(infos []ImageInfo) []ImageInfo {
 	out := make([]ImageInfo, 0, len(infos))
@@ -537,112 +434,4 @@ func remoteInfos(infos []ImageInfo) []ImageInfo {
 		}
 	}
 	return out
-}
-
-func scanLocalImages(local LocalConfig, basePath string) ([]ImageInfo, []ImageInfo, map[string]string, error) {
-	files := make(map[string]string)
-	// seen 在横竖屏之间共享：同一文件即使同时落在两类目录里，也只归入先扫描到的方向。
-	seen := make(map[string]struct{})
-	portrait, err := scanLocalDirs(local.PortraitDirs, local, basePath, files, seen)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	landscape, err := scanLocalDirs(local.LandscapeDirs, local, basePath, files, seen)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	return portrait, landscape, files, nil
-}
-
-func scanLocalDirs(dirs []string, local LocalConfig, basePath string, files map[string]string, seen map[string]struct{}) ([]ImageInfo, error) {
-	var out []ImageInfo
-	for _, dir := range dirs {
-		absDir, err := filepath.Abs(dir)
-		if err != nil {
-			return nil, fmt.Errorf("解析本地图片目录失败 %s: %w", dir, err)
-		}
-		stat, err := os.Stat(absDir)
-		if err != nil {
-			return nil, fmt.Errorf("访问本地图片目录失败 %s: %w", dir, err)
-		}
-		if !stat.IsDir() {
-			return nil, fmt.Errorf("本地图片路径不是目录: %s", dir)
-		}
-
-		err = filepath.WalkDir(absDir, func(p string, d fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			// 跳过隐藏文件与隐藏目录（如 .DS_Store、.thumbnails/），不对外暴露。
-			// 配置的根目录本身即使以点开头也照常扫描。
-			if p != absDir && strings.HasPrefix(d.Name(), ".") {
-				if d.IsDir() {
-					return fs.SkipDir
-				}
-				return nil
-			}
-			// 符号链接一律跳过：WalkDir 不会进入链接目录，但链接文件会被
-			// 当作普通文件读取，进而把配置目录之外的内容纳入白名单。
-			if d.Type()&fs.ModeSymlink != 0 {
-				return nil
-			}
-			if d.IsDir() {
-				return nil
-			}
-			if !local.allowsExtension(p) {
-				return nil
-			}
-
-			absPath, err := filepath.Abs(p)
-			if err != nil {
-				return err
-			}
-			if _, ok := seen[absPath]; ok {
-				return nil
-			}
-			seen[absPath] = struct{}{}
-
-			publicURL, routePath := localRouteURLs(basePath, absPath)
-			info := FetchLocalImageInfo(absPath, publicURL)
-			if info.Width <= 0 || info.Height <= 0 {
-				return nil
-			}
-			if routePath != "" {
-				files[routePath] = absPath
-			}
-			out = append(out, info)
-			return nil
-		})
-		if err != nil {
-			return nil, fmt.Errorf("扫描本地图片目录失败 %s: %w", dir, err)
-		}
-	}
-	return out, nil
-}
-
-func (l LocalConfig) allowsExtension(path string) bool {
-	ext := strings.ToLower(filepath.Ext(path))
-	if ext == "" {
-		return false
-	}
-	for _, allowed := range l.Extensions {
-		if ext == allowed {
-			return true
-		}
-	}
-	return false
-}
-
-// localRouteURLs 生成对外可访问地址，以及用于查找文件的内部路由。
-func localRouteURLs(basePath, absPath string) (publicURL, routePath string) {
-	sum := sha256.Sum256([]byte(absPath))
-	id := hex.EncodeToString(sum[:10])
-	name := filepath.Base(absPath)
-	routePath = "/local/" + id + "/" + name
-
-	prefix := strings.TrimRight(basePath, "/")
-	if prefix == "/" {
-		prefix = ""
-	}
-	return prefix + "/local/" + id + "/" + url.PathEscape(name), routePath
 }

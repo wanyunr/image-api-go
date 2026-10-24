@@ -11,7 +11,7 @@ Image API 是一个轻量级随机图片服务，基于 Go 标准库和内存 UR
 - 支持 JSON、TEXT、REDIRECT 三种输出格式（`source: "local"` 时仅支持 REDIRECT）
 - 支持本机图片目录作为图源（直接返回文件）
 - 支持 Token 鉴权、全局限流、防盗链
-- 支持热重载、健康检查、Prometheus 指标
+- 支持热重载、健康检查、最近访问追溯
 
 ## 项目结构
 
@@ -21,14 +21,21 @@ image-api/
 │   ├── main.go           # 服务入口
 │   ├── go.mod            # Go 模块定义
 │   └── app/              # 业务逻辑包
-│       ├── config.go     # 配置加载与校验
-│       ├── handler.go    # HTTP 处理器
-│       ├── pool.go       # URL 池管理
+│       ├── config.go     # 配置加载、默认值与校验
+│       ├── router.go     # HTTP 路由组装（含 base_path 挂载）
+│       ├── handler.go    # 随机图片与本地静态访问处理器
+│       ├── admin.go      # 健康检查与管理端点
+│       ├── auth.go       # Token 鉴权与防盗链
+│       ├── pool.go       # URL 池核心（快照、随机选取、后台补抓）
+│       ├── urllist.go    # URL 列表文件读取与去重
+│       ├── localscan.go  # 本地图片目录扫描与路由生成
+│       ├── localfile.go  # 本地文件安全打开（防符号链接替换）
 │       ├── recent.go     # 最近访问追溯
 │       ├── imageinfo.go  # 图片元数据探测（支持 WebP）
 │       ├── cache.go      # metadata 缓存持久化
 │       ├── ratelimit.go  # 全局限流
-│       └── util.go       # 通用工具
+│       ├── logging.go    # 结构化日志与脱敏
+│       └── util.go       # HTTP/格式化通用工具
 ├── config.yaml           # 运行时配置文件
 ├── urls/                 # URL 列表目录（source: "url"）
 ├── images/               # 本机图片目录（source: "local"）
