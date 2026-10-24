@@ -1,5 +1,5 @@
 # 构建阶段：编译纯静态二进制
-FROM golang:1.21-alpine AS builder
+FROM golang:1.25-alpine AS builder
 WORKDIR /build
 # 默认使用官方 Go 模块代理；国内网络构建超时时，用 --build-arg 覆盖为国内镜像：
 #   docker compose up -d --build --build-arg GOPROXY=https://goproxy.cn,direct
