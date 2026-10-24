@@ -127,7 +127,11 @@ ReadWritePaths=/opt/image-api
 如需刷新 URL 池（包括重新扫描本地图片目录），可执行：
 
 ```bash
-curl http://127.0.0.1:28085/admin/reload
+curl -X POST http://127.0.0.1:28085/admin/reload
 ```
 
-如果开启了鉴权，请带上 Authorization 头。
+如果配置了 `auth.admin_token` 或开启了鉴权，请带上 Authorization 头。
+
+## 10. 日志格式
+
+服务日志输出到标准输出，由 journald 统一收集。请求日志为结构化 JSON（含 IP、UA、查询参数），token 参数值已自动脱敏为 `***`，可安全留存或接入日志采集。

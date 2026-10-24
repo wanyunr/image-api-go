@@ -4,39 +4,116 @@
 
 适用于希望通过容器快速部署并随时升级服务的场景。当前 Docker 配置会将项目根目录中的配置文件和 URL 列表挂载到容器中，便于直接修改运行配置。
 
+若不想本地构建，也可以直接使用已发布到 GHCR 的官方镜像（见第 3 节）。
+
 ## 2. 前置条件
 
 - Docker 20.10+
 - Docker Compose v2
-- 项目根目录包含 src/、config.yaml、urls/、docker/
+- 官方镜像方式（3.1 / 3.2）：只需准备 `config.yaml` 与 `urls/` 列表（可从 [config.yaml.example](../config.yaml.example) 复制）
+- 本地构建方式（3.3）：需要完整源码（src/、docker/）
 
 ## 3. 部署步骤
 
-```bash
-cd docker
-cp .env.example .env
-cp ../config.yaml.example ../config.yaml
+共三种方式，按需选择：
 
+| 方式 | 适用场景 | 需要源码 |
+|---|---|---|
+| 3.1 docker run + 官方镜像 | 最快体验、临时运行 | 否 |
+| 3.2 compose + 官方镜像（推荐） | 长期运行、便于升级与配置管理 | 否 |
+| 3.3 compose + 本地构建 | 修改过源码、或无法访问 GHCR | 是 |
+
+官方镜像发布在 `ghcr.io/wanyunr/image-api-go`，双架构（amd64/arm64），支持 `latest` 与版本号标签。
+
+### 3.1 方式一：docker run + 官方镜像
+
+```bash
+docker run -d --name image-api \
+  -p 28085:28085 \
+  -v "$PWD/config.yaml:/app/config.yaml:ro" \
+  -v "$PWD/urls:/app/urls:ro" \
+  ghcr.io/wanyunr/image-api-go:latest
+```
+
+> 不挂载配置直接运行时，容器内会自动生成默认配置与空 URL 列表，服务可启动但图池为空（接口返回 503）。
+
+### 3.2 方式二：compose + 官方镜像（推荐）
+
+compose 文件已保存为 `docker/docker-compose.image.yml`，内容如下：
+
+```yaml
+services:
+  image-api:
+    image: ghcr.io/wanyunr/image-api-go:latest  # 如需固定版本改为 :v1.3.0 等
+    container_name: image-api
+    ports:
+      - "${APP_PORT:-28085}:28085"   # 宿主机端口（可用 .env 覆盖），容器内固定 28085
+    environment:
+      TZ: "${TZ:-Asia/Shanghai}"     # 容器时区（镜像已装 tzdata）
+    volumes:
+      - ../config.yaml:/app/config.yaml
+      - ../urls:/app/urls
+      - ../cache:/app/cache
+      # 启用本机图片源时取消注释，并在 config.yaml 的 local.*_dirs 中使用 /app/images/...
+      # - ../images:/app/images:ro
+    restart: unless-stopped
+```
+
+启动：
+
+```bash
+docker composeup -d
+```
+
+升级到新版本：
+
+```bash
+docker compose pull
+docker composeup -d
+```
+
+### 3.3 方式三：compose + 本地构建
+
+使用 `docker-compose.yml`，从源码构建镜像：
+
+```bash
+git clone https://github.com/wanyunr/image-api-go.git
+cd docker
 docker compose up -d --build
 ```
 
-### 验证
+### 3.4 验证
 
 ```bash
 docker compose ps
 curl http://127.0.0.1:28085/health
 ```
 
+`docker run` 方式（3.1）没有对应 compose 项目，可省略第一条命令。
+
 ## 4. 目录说明
 
 | 文件 | 说明 |
 |---|---|
-| docker/Dockerfile | 多阶段构建镜像 |
-| docker/docker-compose.yml | 容器编排与挂载配置 |
-| docker/.env.example | 环境变量模板 |
+| docker/Dockerfile | 多阶段构建镜像（编译静态二进制 + alpine 运行时） |
+| docker/docker-compose.yml | 容器编排与挂载配置（本地构建源码） |
+| docker/docker-compose.image.yml | 容器编排与挂载配置（直接使用官方 GHCR 镜像） |
+| docker/.env.example | 环境变量模板，复制为 .env 使用 |
 | .dockerignore | 构建上下文忽略文件 |
 
-## 5. 常用命令
+## 5. 环境变量
+
+在 `docker/.env` 中配置（两种 compose 方式均生效；`GOPROXY` 仅本地构建时生效）：
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `APP_PORT` | `28085` | 宿主机映射端口，容器内固定 28085 |
+| `TZ` | `Asia/Shanghai` | 容器时区，镜像已内置 tzdata |
+| `GOPROXY` | 官方代理 | Go 模块代理，仅构建时生效 |
+
+## 6. 常用命令
+
+以下命令默认作用于 `docker-compose.yml`（本地构建版）；使用官方镜像版时追加 `-f docker-compose.image.yml`。
 
 ```bash
 # 查看日志
@@ -57,16 +134,15 @@ docker compose down
 docker compose exec image-api sh
 ```
 
-## 6. 配置说明
+## 7. 配置生效
 
-- 修改 docker/.env 可调整端口、时区和代理设置
-- 修改项目根目录的 config.yaml / urls/*.txt 后，执行 `docker compose restart` 即可生效
-- metadata_mode 默认可配置为 `on_request` 或 `prefetch`
+- 服务配置的字段含义见 [README 配置速查表](../README.md#配置)，完整注释模板见 [config.yaml.example](../config.yaml.example)
+- 修改 `config.yaml` / `urls/*.txt` 后：`docker compose restart` 重启生效，或调用 `POST /admin/reload` 在线热重载（URL 列表与本地目录均支持）
 - `source: local` 时，需要把宿主机图片目录挂载进容器，并在 `local.portrait_dirs` / `local.landscape_dirs` 中使用容器内路径。docker-compose.yml 已预留 `../images:/app/images:ro` 注释项，按需取消注释
 
-## 7. 常见问题
+## 8. 常见问题
 
-### 构建超时
+### 8.1 构建超时
 
 若构建时出现 Go 模块下载超时，可在 docker/.env 中配置代理：
 
@@ -80,18 +156,25 @@ GOPROXY=https://goproxy.cn,direct
 docker compose up -d --build
 ```
 
-### 服务返回 503
+### 8.2 服务返回 503
 
-通常是 URL 列表为空或未成功挂载。请检查：
+表示图池为空。`source: "url"` 时检查：
 
 - urls/portrait.txt、urls/landscape.txt 是否存在
 - docker-compose.yml 的挂载配置是否正确
 - 文件中是否包含有效 http/https URL
 
-## 8. 版本注入
+`source: "local"` 时检查：
 
-如需在镜像中注入版本号，可在 Dockerfile 中追加 `-X main.version=...`：
+- 图片目录是否已挂载进容器，且 `local.*_dirs` 使用的是容器内路径
+- 目录中是否存在被 `local.extensions` 允许的图片文件
+
+## 9. 版本注入
+
+CI 发布的镜像已自动注入与标签一致的版本号（`image-api --version` 可验证）。仅本地手动构建且需要注入版本号时，修改 Dockerfile 的编译行：
 
 ```dockerfile
 RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=v1.0.0" -o image-api .
 ```
+
+构建与发布的完整流程见 [built.md](built.md)。

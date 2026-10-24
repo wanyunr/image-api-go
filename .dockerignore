@@ -1,8 +1,14 @@
 .git
 .github
-.workbuddy
+.commandcode
 docs
+test
+tools
 README.md
 LICENSE
 image-api
 image-api.exe
+config.yaml
+cache
+urls
+images
