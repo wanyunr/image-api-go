@@ -39,7 +39,7 @@ docker run -d --name image-api \
 
 ### 3.2 方式二：compose + 官方镜像（推荐）
 
-compose 文件已保存为 `docker/docker-compose.image.yml`，内容如下：
+新建一个部署目录，把以下内容保存为其中的 `docker-compose.yml`（无需克隆本仓库）：
 
 ```yaml
 services:
@@ -51,25 +51,28 @@ services:
     environment:
       TZ: "${TZ:-Asia/Shanghai}"     # 容器时区（镜像已装 tzdata）
     volumes:
-      - ../config.yaml:/app/config.yaml
-      - ../urls:/app/urls
-      - ../cache:/app/cache
+      - ./config.yaml:/app/config.yaml:ro   # 服务只读配置；URL 列表就绪后 /app/urls 也可加 :ro
+      - ./urls:/app/urls
+      - ./cache:/app/cache
       # 启用本机图片源时取消注释，并在 config.yaml 的 local.*_dirs 中使用 /app/images/...
-      # - ../images:/app/images:ro
+      # - ./images:/app/images:ro
+    read_only: true
+    tmpfs:
+      - /tmp
     restart: unless-stopped
 ```
 
-启动：
+在部署目录放置 `config.yaml`（可从 [config.yaml.example](../config.yaml.example) 复制）与 `urls/` 列表，然后启动：
 
 ```bash
-docker composeup -d
+docker compose up -d
 ```
 
 升级到新版本：
 
 ```bash
 docker compose pull
-docker composeup -d
+docker compose up -d
 ```
 
 ### 3.3 方式三：compose + 本地构建
@@ -97,13 +100,14 @@ curl http://127.0.0.1:28085/health
 |---|---|
 | docker/Dockerfile | 多阶段构建镜像（编译静态二进制 + alpine 运行时） |
 | docker/docker-compose.yml | 容器编排与挂载配置（本地构建源码） |
-| docker/docker-compose.image.yml | 容器编排与挂载配置（直接使用官方 GHCR 镜像） |
 | docker/.env.example | 环境变量模板，复制为 .env 使用 |
 | .dockerignore | 构建上下文忽略文件 |
 
+官方镜像版的 compose 内容见 3.2 节，按需保存到自己的部署目录，仓库中不单独提供文件。
+
 ## 5. 环境变量
 
-在 `docker/.env` 中配置（两种 compose 方式均生效；`GOPROXY` 仅本地构建时生效）：
+在 compose 文件同目录的 `.env` 中配置（本地构建版位于 `docker/.env`；`GOPROXY` 仅本地构建时生效）：
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
@@ -113,7 +117,7 @@ curl http://127.0.0.1:28085/health
 
 ## 6. 常用命令
 
-以下命令默认作用于 `docker-compose.yml`（本地构建版）；使用官方镜像版时追加 `-f docker-compose.image.yml`。
+在 compose 文件所在目录执行（本地构建版为 `docker/`，官方镜像版为你的部署目录）：
 
 ```bash
 # 查看日志
@@ -137,8 +141,21 @@ docker compose exec image-api sh
 ## 7. 配置生效
 
 - 服务配置的字段含义见 [README 配置速查表](../README.md#配置)，完整注释模板见 [config.yaml.example](../config.yaml.example)
-- 修改 `config.yaml` / `urls/*.txt` 后：`docker compose restart` 重启生效，或调用 `POST /admin/reload` 在线热重载（URL 列表与本地目录均支持）
+- 修改 `config.yaml` / `urls/*.txt` 后：`docker compose restart` 重启生效，或调用 `GET/POST /admin/reload` 在线热重载（浏览器可直接访问 `?token=…`，URL 列表与本地目录均支持）
 - `source: local` 时，需要把宿主机图片目录挂载进容器，并在 `local.portrait_dirs` / `local.landscape_dirs` 中使用容器内路径。docker-compose.yml 已预留 `../images:/app/images:ro` 注释项，按需取消注释
+
+### 7.1 运行权限（防篡改）
+
+容器内服务以**非 root 用户（UID 10001）**运行，且根文件系统只读（`read_only: true`），写操作只发生在挂载卷内。由此：
+
+- `config.yaml` 挂载为只读（`:ro`）——服务从不写配置，篡改面归零
+- `urls/` 默认可写（首次启动需要自动生成列表文件）；列表就绪后建议加 `:ro`，彻底封死"篡改 URL 列表注入恶意跳转"的路径
+- `cache/` 是唯一需要写权限的挂载（仅 prefetch 模式使用）。宿主机目录需对 UID 10001 可写：
+
+```bash
+sudo chown -R 10001:10001 cache
+```
+- 本地图源目录一律 `:ro` 挂载（compose 中预留的注释项已带）
 
 ## 8. 常见问题
 

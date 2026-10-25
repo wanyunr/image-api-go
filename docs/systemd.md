@@ -119,15 +119,22 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/opt/image-api
+ReadOnlyPaths=/opt/image-api/urls
+ReadWritePaths=/opt/image-api/cache
 ```
 
 `source: local` 时，请确保运行服务的用户对 `local.portrait_dirs` / `local.landscape_dirs` 指向的目录有读权限，文件由服务直接读取并返回。
 
+注意：上面的 `ReadOnlyPaths=/opt/image-api/urls` 会让服务无法自动创建缺失的 URL 列表文件，部署前请先手动创建 `urls/portrait.txt` 与 `urls/landscape.txt`。
+
 如需刷新 URL 池（包括重新扫描本地图片目录），可执行：
 
 ```bash
-curl -X POST http://127.0.0.1:28085/admin/reload
+# 浏览器/命令行直接刷新（GET + 查询参数）
+curl "http://127.0.0.1:28085/admin/reload?token=your_admin_token"
+
+# 或脚本调用（POST + 请求头）
+curl -X POST -H "Authorization: Bearer your_admin_token" http://127.0.0.1:28085/admin/reload
 ```
 
 如果配置了 `auth.admin_token` 或开启了鉴权，请带上 Authorization 头。

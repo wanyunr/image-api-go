@@ -181,17 +181,25 @@ GET /local/<id>/<filename>
 #### 热重载 URL 池
 
 ```http
+GET  /admin/reload?token=your_admin_token
 POST /admin/reload
 ```
 
 重新加载 URL 列表（`source: "local"` 时重新扫描图片目录），并刷新内存池。适用于修改了 `urls/*.txt` 或增删了本地图片后立即生效。
 
+- **GET**：可直接在浏览器地址栏访问或用 `<a href>` 收藏，`token` 通过查询参数传递，适合“点一下就刷新”。
+- **POST**：适合脚本/CI，`token` 走 `Authorization` 头，避免 token 出现在 URL 与访问日志中。
+- 两种方法效果完全一致；其它方法返回 405。
+
 ```bash
-# 使用 admin_token
+# 浏览器/命令行直接访问（GET + 查询参数）
+curl "http://localhost:28085/admin/reload?token=your_admin_token"
+
+# 脚本调用（POST + 请求头）
 curl -X POST -H "Authorization: Bearer your_admin_token" http://localhost:28085/admin/reload
 
 # 如果未配置 admin_token，则使用普通 Token
-curl -X POST -H "Authorization: Bearer your_secret_token" http://localhost:28085/admin/reload
+curl "http://localhost:28085/admin/reload?token=your_secret_token"
 ```
 
 #### 清空死链

@@ -32,7 +32,9 @@ func openLocalFile(path string) (*os.File, error) {
 		}
 		return nil, lstatErr
 	}
-	if pathInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(opened, pathInfo) {
+	if pathInfo.Mode()&os.ModeSymlink != 0 ||
+		!opened.Mode().IsRegular() ||
+		!os.SameFile(opened, pathInfo) {
 		f.Close()
 		return nil, fmt.Errorf("%w: %s", errLocalFileChanged, path)
 	}

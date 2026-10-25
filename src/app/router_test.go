@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -59,6 +61,70 @@ func TestRouterAdminAuth(t *testing.T) {
 	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/recent?token=admin-only", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("携带 admin_token 状态码 = %d, want 200", rec.Code)
+	}
+}
+
+// TestRouterSecurityHeaders 验证所有响应都带 nosniff，且不携带 CSP：
+// CSP 会被导航过本服务的页面继承给 about:blank 文档，实测会阻断/悬挂
+// 正常的图片嵌入；nosniff 加上恒为 image/* 的 Content-Type 已覆盖
+// polyglot 文件的 MIME 混淆攻击面。
+func TestRouterSecurityHeaders(t *testing.T) {
+	cfg, h := newRouterTestHandler(t)
+	router := NewRouter(cfg, h)
+
+	// 非法 orientation 返回 400，但中间件已注入安全头。
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/?orientation=square", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("状态码 = %d, want 400", rec.Code)
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("图片端点缺少 nosniff: %q", got)
+	}
+	if got := rec.Header().Get("Content-Security-Policy"); got != "" {
+		t.Fatalf("不应携带 CSP: %q", got)
+	}
+
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("/health 缺少 nosniff: %q", got)
+	}
+}
+
+// TestRouterReloadMethodEnforced 验证 reload 同时支持 GET（浏览器直接访问刷新）
+// 与 POST，其它方法返回 405。
+func TestRouterReloadMethodEnforced(t *testing.T) {
+	cfg, h := newRouterTestHandler(t)
+	cfg.Auth.AdminToken = "admin-only"
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "p.txt"), "https://cdn.example.com/p.jpg\n")
+	writeFile(t, filepath.Join(root, "l.txt"), "https://cdn.example.com/l.jpg\n")
+	cfg.URLs.Portrait = filepath.Join(root, "p.txt")
+	cfg.URLs.Landscape = filepath.Join(root, "l.txt")
+	router := NewRouter(cfg, h)
+
+	for _, method := range []string{http.MethodDelete, http.MethodPut, http.MethodPatch} {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(method, "/admin/reload?token=admin-only", nil))
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s /admin/reload = %d, want 405", method, rec.Code)
+		}
+	}
+
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(method, "/admin/reload?token=admin-only", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s /admin/reload = %d, want 200（body: %s）", method, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

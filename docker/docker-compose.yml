@@ -13,9 +13,12 @@ services:
     environment:
       TZ: "${TZ:-Asia/Shanghai}"     # 容器时区（镜像已装 tzdata）
     volumes:
-      - ../config.yaml:/app/config.yaml
+      - ../config.yaml:/app/config.yaml:ro   # 服务只读配置；URL 列表就绪后 /app/urls 也可加 :ro
       - ../urls:/app/urls
       - ../cache:/app/cache
       # 启用本机图片源时取消注释，并在 config.yaml 的 local.*_dirs 中使用 /app/images/...
       # - ../images:/app/images:ro
+    read_only: true
+    tmpfs:
+      - /tmp
     restart: unless-stopped

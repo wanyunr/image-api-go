@@ -29,5 +29,19 @@ func NewRouter(cfg *Config, h *Handler) http.Handler {
 	admin.HandleFunc("/admin/recent", h.Recent)
 	routes.Handle("/admin/", h.AdminAuth(admin))
 
-	return root
+	return nosniffHeaders(root)
+}
+
+// nosniffHeaders 对所有响应禁用浏览器 MIME 嗅探，强制按声明的 Content-Type 渲染。
+// 这是 polyglot 文件（既是合法图片、又嵌恶意脚本的内容）的核心防线：本服务
+// 的图片 Content-Type 由扩展名白名单决定、恒为 image/*，nosniff 使浏览器无从
+// 把它嗅探成 HTML 执行。
+// 有意不加 Content-Security-Policy：导航过带 CSP 响应的页面会把策略继承给
+// 后续 about:blank 文档（实测 default-src 'none' 会阻断图片加载，sandbox 会使
+// 加载悬挂），伤及正常嵌入场景；nosniff 已覆盖本服务的实际攻击面。
+func nosniffHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
 }

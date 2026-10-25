@@ -33,6 +33,7 @@ type ReloadResponse struct {
 
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	portrait, landscape := h.pool.Count()
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	resp := HealthResponse{
 		Status:             "ok",
@@ -54,6 +55,15 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) Reload(w http.ResponseWriter, r *http.Request) {
+	// 支持浏览器直接访问 URL 刷新（GET，token 走查询参数），也支持脚本用 POST；
+	// 其它方法拒绝。
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// GET 刷新必须直达服务端：禁止浏览器/代理缓存 reload 响应。
+	w.Header().Set("Cache-Control", "no-store")
+
 	stats, err := h.pool.Load(h.cfg)
 	if err != nil {
 		log.Printf("[reload failed] %v", err)
@@ -93,6 +103,7 @@ func (h *Handler) ClearDead(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	h.pool.ClearDead()
 	logStructured("clear_dead", map[string]any{})
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -106,6 +117,7 @@ func (h *Handler) Recent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	items := h.recent.Recent(limit)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

@@ -15,8 +15,11 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o image-api .
 # 运行阶段：最小镜像
 FROM alpine:latest
 # 安装时区数据，支持 TZ 环境变量
-RUN apk add --no-cache tzdata
+RUN apk add --no-cache tzdata \
+    && adduser -D -H -u 10001 app
 WORKDIR /app
 COPY --from=builder /build/image-api .
+RUN mkdir -p /app/cache && chown -R app:app /app
+USER app
 EXPOSE 28085
 ENTRYPOINT ["./image-api"]
