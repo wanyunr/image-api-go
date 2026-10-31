@@ -59,6 +59,7 @@ from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import quote, unquote
 
 # ---------------------------------------------------------------------------
 # 插件注册表
@@ -507,13 +508,43 @@ def run_task(task: TaskConfig, log: logging.Logger,
     return stats
 
 
+def _encode_url_path(path: str) -> str:
+    """对 URL 路径做百分号编码（保留 / 分隔符）。
+
+    文件名可能含 #、空格、[]、中文、emoji 等：# 会被浏览器当作片段分隔符，
+    空格等字符对部分 HTTP 客户端非法，编码后浏览器才能直接访问。
+    """
+    return quote(path, safe="/")
+
+
+def _normalize_url_line(line: str) -> str:
+    """把列表行归一化为「路径百分号编码」形式（幂等，兼容旧版未编码行）。
+
+    旧版本生成的行未编码；合并去重前先解码再统一编码，
+    避免同一文件出现未编码/已编码两行重复。
+    """
+    scheme, sep, rest = line.partition("://")
+    if not sep or not rest:
+        return line
+    netloc, slash, path = rest.partition("/")
+    if not (netloc and slash):
+        return line
+    try:
+        return f"{scheme}://{netloc}/{quote(unquote(path, errors='strict'), safe='/')}"
+    except UnicodeDecodeError:  # 旧行含非法百分号序列，保持原样以免损坏
+        return line
+
+
 def _write_url_list(task: TaskConfig, log: logging.Logger) -> None:
     """增量更新 URL 列表文件，放在本脚本（batch_convert.py）同级目录。
 
     文件名按 target 目录名命名（如 target 为 portrait -> portrait.txt）；
-    每行: <基础域名>/<target目录名>/<相对路径>，保留子目录结构。
+    每行: <基础域名>/<target目录名>/<相对路径>，保留子目录结构，
+    路径部分做百分号编码（# -> %23、空格 -> %20、中文/emoji -> UTF-8 编码），
+    保证浏览器与 HTTP 客户端可直接访问。
     增量语义：读取已有列表，与当前输出目录的 URL 合并去重后写回——
-    已存在的 URL 不会重复写入，只有新增文件才会追加。
+    已存在的 URL 不会重复写入，只有新增文件才会追加；
+    旧版本写入的未编码行会在合并时自动归一化为编码形式。
     """
     list_path = Path(__file__).resolve().parent / f"{task.target.name}.txt"
 
@@ -523,12 +554,12 @@ def _write_url_list(task: TaskConfig, log: logging.Logger) -> None:
         if not p.is_file():
             continue
         rel = p.relative_to(task.target).as_posix()
-        current.append(f"{task.url_prefix}/{task.target.name}/{rel}")
+        current.append(f"{task.url_prefix}/{task.target.name}/{_encode_url_path(rel)}")
 
-    # 已有列表（增量合并的基础）
+    # 已有列表（增量合并的基础；旧行统一归一化后再去重）
     existing: set = set()
     if list_path.exists():
-        existing = {ln.strip() for ln in
+        existing = {_normalize_url_line(ln.strip()) for ln in
                     list_path.read_text(encoding="utf-8").splitlines() if ln.strip()}
 
     merged = sorted(existing | set(current))
